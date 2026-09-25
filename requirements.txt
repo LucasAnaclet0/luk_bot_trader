@@ -1,4 +1,5 @@
 streamlit==1.32.0
-plotly==5.18.1
-requests==2.32.3
-python-binance==1.0.22
+plotly==5.18.0
+requests==2.31.0
+python-binance==1.0.19
+pillow==10.2.0
