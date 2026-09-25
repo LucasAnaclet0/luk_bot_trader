@@ -1,7 +1,7 @@
-streamlit
-plotly
-requests
-python-binance
+# streamlit
+# plotly
+# requests
+# python-binance
 
 # Inicializa o git
 git init
@@ -22,4 +22,4 @@ git commit -m "Meu bot trader completo"
 # Conecta e envia (substitua SEUUSUARIO pelo seu):
 git remote add origin https://github.com/LucasAnaclet0/luk_bot_trader.git
 git branch -M main
-git push -u origin main
+git push -u origin main --force
