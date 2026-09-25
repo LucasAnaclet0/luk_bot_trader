@@ -1,25 +1,4 @@
-# streamlit
-# plotly
-# requests
-# python-binance
-
-# Inicializa o git
-git init
-
-# Adiciona todos os arquivos
-git add .
-
-# Cria o primeiro commit
-git commit -m "Meu bot trader completo"
-
-# Cria repo no GitHub:
-# 1. Acesse github.com/new
-# 2. Nome: luk-bot-trader (ou o que quiser)
-# 3. NÃO marque "Add README"
-# 4. Clique "Create repository"
-# 5. Copie a URL que aparece (tipo https://github.com/SEUUSUARIO/luk-bot-trader.git)
-
-# Conecta e envia (substitua SEUUSUARIO pelo seu):
-git remote add origin https://github.com/LucasAnaclet0/luk_bot_trader.git
-git branch -M main
-git push -u origin main --force
+streamlit==1.38.0
+plotly==5.24.1
+requests==2.32.3
+python-binance==1.0.22
