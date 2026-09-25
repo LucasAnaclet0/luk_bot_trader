@@ -1,0 +1,33 @@
+24/09/2026 17:07:47 | INFO     | Conectado na Binance Testnet
+24/09/2026 17:07:47 | INFO     | ==================================================
+24/09/2026 17:07:47 | INFO     | 🤖 BOT TRADER - INICIANDO
+24/09/2026 17:07:47 | INFO     | ==================================================
+24/09/2026 17:07:47 | INFO     | 📊 Par: BTCUSDT
+24/09/2026 17:07:47 | INFO     | ⏱️  Intervalo: 60 segundos
+24/09/2026 17:07:47 | INFO     | 💰 Valor por operação: $100
+24/09/2026 17:07:47 | INFO     | 🌐 Modo: TESTNET (ordens reais)
+24/09/2026 17:07:47 | INFO     | 📱 Telegram: ATIVADO
+24/09/2026 17:07:47 | INFO     | ==================================================
+24/09/2026 17:07:58 | INFO     | Bot iniciado e conectado ao Telegram
+24/09/2026 17:16:57 | INFO     | Conectado na Binance Testnet
+24/09/2026 17:16:57 | INFO     | ==================================================
+24/09/2026 17:16:57 | INFO     | 🤖 BOT TRADER - INICIANDO
+24/09/2026 17:16:57 | INFO     | ==================================================
+24/09/2026 17:16:57 | INFO     | 📊 Par: BTCUSDT
+24/09/2026 17:16:57 | INFO     | ⏱️  Intervalo: 60 segundos
+24/09/2026 17:16:57 | INFO     | 💰 Valor por operação: $100
+24/09/2026 17:16:57 | INFO     | 🌐 Modo: TESTNET (ordens reais)
+24/09/2026 17:16:57 | INFO     | 📱 Telegram: ATIVADO
+24/09/2026 17:16:57 | INFO     | ==================================================
+24/09/2026 17:16:58 | INFO     | Bot iniciado e conectado ao Telegram
+24/09/2026 17:19:38 | ERROR    | Falha ao buscar candles
+24/09/2026 20:24:47 | ERROR    | Falha ao buscar candles
+24/09/2026 20:25:47 | ERROR    | Falha ao buscar candles
+24/09/2026 23:38:31 | ERROR    | Falha ao buscar candles
+24/09/2026 23:39:31 | ERROR    | Falha ao buscar candles
+25/09/2026 00:04:50 | INFO     | Bot interrompido por Ctrl+C
+25/09/2026 00:04:50 | INFO     | ==================================================
+25/09/2026 00:04:50 | INFO     | 📊 RESUMO FINAL
+25/09/2026 00:04:50 | INFO     | Ciclos: 31
+25/09/2026 00:04:50 | INFO     | Operações na sessão: 0
+25/09/2026 00:04:50 | INFO     | ==================================================
