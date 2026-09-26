@@ -88,41 +88,57 @@ def carregar_dados_seguros():
     }
 
 def criar_grafico_candles(dados):
-    """Cria gráfico de candles com validação de segurança"""
+    """Cria gráfico de candles adaptando-se ao número de colunas recebidas"""
     
-    # 1. Verifica se os dados existem e não estão vazios
     if not dados or len(dados) == 0:
-        st.warning("⚠️ Nenhum dado recebido da API. Tentando novamente...")
+        st.warning("⚠️ Nenhum dado recebido.")
         return None
     
     try:
-        # 2. Converte para DataFrame com tratamento de erro
-        df = pd.DataFrame(dados, columns=[
-            'timestamp', 'open', 'high', 'low', 'close', 'volume',
-            'close_time', 'quote_volume', 'trades', 'taker_buy_base',
-            'taker_buy_quote', 'ignore'
-        ])
+        # Detecta quantas colunas têm os dados
+        num_cols = len(dados[0])
         
-        # 3. Valida se as colunas necessárias existem
+        # Define as colunas baseadas no tamanho real dos dados
+        if num_cols >= 12:
+            # Formato completo da Binance Klines
+            columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume', 
+                       'close_time', 'quote_volume', 'trades', 'taker_buy_base', 
+                       'taker_buy_quote', 'ignore']
+        elif num_cols >= 6:
+            # Formato simplificado (apenas OHLCV + Timestamp)
+            columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+        else:
+            raise ValueError(f"Número inesperado de colunas nos dados: {num_cols}")
+
+        # Cria o DataFrame usando apenas as colunas disponíveis
+        df = pd.DataFrame(dados, columns=columns[:num_cols])
+        
+        # Garante que as colunas críticas existam e são numéricas
         required_cols = ['open', 'high', 'low', 'close']
         for col in required_cols:
             if col not in df.columns:
-                raise ValueError(f"Coluna '{col}' faltando nos dados")
-        
-        # 4. Converte tipos numéricos (segurança extra)
-        for col in required_cols + ['volume']:
+                raise KeyError(f"Coluna '{col}' não encontrada nos dados")
             df[col] = pd.to_numeric(df[col], errors='coerce')
             
-        # Remove linhas com NaN (caso algum dado venha corrompido)
+        if 'volume' in df.columns:
+            df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
+
+        # Remove linhas inválidas
         df.dropna(subset=required_cols, inplace=True)
         
         if df.empty:
-            st.error("❌ Dados inválidos após limpeza.")
+            st.error("❌ Dados vazios após limpeza.")
             return None
 
-        # 5. Cria o gráfico normalmente
+        # Converte timestamp se existir
+        if 'timestamp' in df.columns:
+            x_axis = pd.to_datetime(df['timestamp'], unit='ms')
+        else:
+            x_axis = range(len(df)) # Fallback para índice simples
+
+        # Cria o gráfico
         fig = go.Figure(data=[go.Candlestick(
-            x=pd.to_datetime(df['timestamp'], unit='ms'),
+            x=x_axis,
             open=df['open'],
             high=df['high'],
             low=df['low'],
@@ -142,34 +158,64 @@ def criar_grafico_candles(dados):
         return fig
         
     except Exception as e:
-        st.error(f"❌ Erro ao processar dados: {str(e)}")
+        st.error(f"❌ Erro ao processar candles: {str(e)}")
         return None
 
+
 def criar_grafico_volume(dados):
-    """Cria gráfico de volume"""
-    df = pd.DataFrame(dados, columns=[
-        'timestamp', 'open', 'high', 'low', 'close', 'volume',
-        'close_time', 'quote_volume', 'trades', 'taker_buy_base',
-        'taker_buy_quote', 'ignore'
-    ])
+    """Cria gráfico de volume adaptativo"""
     
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df['volume'] = df['volume'].astype(float)
-    
-    fig = go.Figure(data=[go.Bar(
-        x=df['timestamp'],
-        y=df['volume'],
-        name='Volume'
-    )])
-    
-    fig.update_layout(
-        title='Volume de Negociação',
-        yaxis_title='Volume',
-        xaxis_title='Tempo',
-        height=300
-    )
-    
-    return fig
+    if not dados or len(dados) == 0:
+        return None
+        
+    try:
+        num_cols = len(dados[0])
+        
+        if num_cols >= 12:
+            columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume', 
+                       'close_time', 'quote_volume', 'trades', 'taker_buy_base', 
+                       'taker_buy_quote', 'ignore']
+        elif num_cols >= 6:
+            columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+        else:
+             # Se tiver menos de 6, talvez seja só preço? Vamos assumir estrutura mínima
+             columns = ['timestamp', 'open', 'high', 'low', 'close']
+             # Volume não existe, então saímos ou usamos zeros
+             st.info("ℹ️ Dados de volume indisponíveis neste formato.")
+             return None
+
+        df = pd.DataFrame(dados, columns=columns[:num_cols])
+        
+        if 'volume' not in df.columns:
+            return None
+            
+        df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
+        
+        if 'timestamp' in df.columns:
+            x_axis = pd.to_datetime(df['timestamp'], unit='ms')
+        else:
+            x_axis = range(len(df))
+
+        fig = go.Figure(data=[go.Bar(
+            x=x_axis,
+            y=df['volume'],
+            name='Volume',
+            marker_color='#8884d8'
+        )])
+        
+        fig.update_layout(
+            title='Volume de Negociação',
+            yaxis_title='Volume',
+            xaxis_title='Tempo',
+            height=300,
+            template="plotly_dark"
+        )
+        
+        return fig
+
+    except Exception as e:
+        st.error(f"❌ Erro ao processar volume: {str(e)}")
+        return None
 
 # --- INTERFACE ---
 
