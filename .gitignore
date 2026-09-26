@@ -1,0 +1,20 @@
+# Segredos
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Dados locais / Logs
+logs/
+posicao_aberta.json
+historico_operacoes.json
+curva_backtest.json
+
+# Ambiente Virtual
+venv/
+ENV/
+
+# IDEs
+.vscode/
+.idea/
