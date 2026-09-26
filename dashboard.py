@@ -88,36 +88,62 @@ def carregar_dados_seguros():
     }
 
 def criar_grafico_candles(dados):
-    """Cria gráfico de candlestick"""
-    df = pd.DataFrame(dados, columns=[
-        'timestamp', 'open', 'high', 'low', 'close', 'volume',
-        'close_time', 'quote_volume', 'trades', 'taker_buy_base',
-        'taker_buy_quote', 'ignore'
-    ])
+    """Cria gráfico de candles com validação de segurança"""
     
-    # Converte tipos
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    for col in ['open', 'high', 'low', 'close', 'volume']:
-        df[col] = df[col].astype(float)
+    # 1. Verifica se os dados existem e não estão vazios
+    if not dados or len(dados) == 0:
+        st.warning("⚠️ Nenhum dado recebido da API. Tentando novamente...")
+        return None
     
-    fig = go.Figure(data=[go.Candlestick(
-        x=df['timestamp'],
-        open=df['open'],
-        high=df['high'],
-        low=df['low'],
-        close=df['close'],
-        name=f'{SIMBOLO}'
-    )])
-    
-    fig.update_layout(
-        title=f'Gráfico de Candles - {SIMBOLO}',
-        yaxis_title='Preço (USDT)',
-        xaxis_title='Tempo',
-        height=400,
-        xaxis_rangeslider_visible=False
-    )
-    
-    return fig
+    try:
+        # 2. Converte para DataFrame com tratamento de erro
+        df = pd.DataFrame(dados, columns=[
+            'timestamp', 'open', 'high', 'low', 'close', 'volume',
+            'close_time', 'quote_volume', 'trades', 'taker_buy_base',
+            'taker_buy_quote', 'ignore'
+        ])
+        
+        # 3. Valida se as colunas necessárias existem
+        required_cols = ['open', 'high', 'low', 'close']
+        for col in required_cols:
+            if col not in df.columns:
+                raise ValueError(f"Coluna '{col}' faltando nos dados")
+        
+        # 4. Converte tipos numéricos (segurança extra)
+        for col in required_cols + ['volume']:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+        # Remove linhas com NaN (caso algum dado venha corrompido)
+        df.dropna(subset=required_cols, inplace=True)
+        
+        if df.empty:
+            st.error("❌ Dados inválidos após limpeza.")
+            return None
+
+        # 5. Cria o gráfico normalmente
+        fig = go.Figure(data=[go.Candlestick(
+            x=pd.to_datetime(df['timestamp'], unit='ms'),
+            open=df['open'],
+            high=df['high'],
+            low=df['low'],
+            close=df['close'],
+            name='BTCUSDT'
+        )])
+        
+        fig.update_layout(
+            title="📈 Candlestick Chart - BTC/USDT",
+            yaxis_title="Preço ($)",
+            xaxis_title="Tempo",
+            template="plotly_dark",
+            height=400,
+            xaxis_rangeslider_visible=False
+        )
+        
+        return fig
+        
+    except Exception as e:
+        st.error(f"❌ Erro ao processar dados: {str(e)}")
+        return None
 
 def criar_grafico_volume(dados):
     """Cria gráfico de volume"""
