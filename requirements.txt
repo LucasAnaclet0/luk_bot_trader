@@ -3,3 +3,4 @@ plotly>=5.18.0
 requests>=2.31.0
 python-binance>=1.0.19
 python-dotenv
+pandas
