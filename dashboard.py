@@ -1,5 +1,5 @@
 # dashboard.py
-# Dashboard Web para monitorar o bot - VERSÃO ROBUSTA PARA CLOUD
+# Dashboard Web para monitorar o bot - VERSÃO ULTRA-ROBUSTA PARA CLOUD
 
 import streamlit as st
 import pandas as pd
@@ -10,14 +10,18 @@ import random
 import os
 import json
 
-# Importa nossas funções
+# --- TENTATIVA DE IMPORT COM FALLBACK SEGURO ---
 try:
     from analise import buscar_candles, analisar_candles
     from indicadores import analisar_indicadores
-    from gerenciador import GerenciadorPosicoes
-    from config import SIMBOLO, TEMPO_ENTRE_ANALISES
+    # Tenta importar config, mas se der erro (ex: dotenv faltando no cloud), ignora
+    try:
+        from config import SIMBOLO, TEMPO_ENTRE_ANALISES
+    except ImportError:
+        SIMBOLO = "BTCUSDT"
+        TEMPO_ENTRE_ANALISES = 60
 except ImportError as e:
-    st.error(f"Erro ao importar módulos: {e}")
+    st.error(f"Erro ao importar módulos principais: {e}")
     st.stop()
 
 # Configuração da página
@@ -27,16 +31,10 @@ st.set_page_config(
     layout="wide"
 )
 
-# Inicializa o gerenciador
-if 'gerenciador' not in st.session_state:
-    st.session_state.gerenciador = GerenciadorPosicoes()
-
-gerenciador = st.session_state.gerenciador
-
-# --- FUNÇÕES DE DADOS COM FALLBACK ---
+# --- FUNÇÕES DE DADOS COM FALLBACK INTELIGENTE ---
 
 def gerar_dados_simulados():
-    """Gera candles fake caso a API falhe (para o dashboard não quebrar)"""
+    """Gera candles fake realistas caso a API falhe"""
     base_price = 84000.0
     data = []
     current_time = int(time.time() * 1000)
@@ -48,31 +46,37 @@ def gerar_dados_simulados():
         low_p = min(open_p, close_p) - random.uniform(0, 20)
         vol = random.uniform(10, 100)
         
-        # Formato da Binance Klines: [time, open, high, low, close, volume, ...]
+        # Formato simplificado: [time, open, high, low, close, volume]
         row = [current_time, str(open_p), str(high_p), str(low_p), str(close_p), str(vol)]
         data.append(row)
-        current_time += 60000 # +1 minuto
+        current_time += 60000 
         
     return data
 
-@st.cache_data(ttl=30)  # Cache por 30 segundos
+@st.cache_data(ttl=30)
 def carregar_dados_seguros():
     """Tenta API real, cai para simulação se falhar"""
+    modo = 'SIMULADO'
+    dados_reais = None
+    
     try:
         # 1. Tenta buscar dados reais
-        dados_reais = buscar_candles()
+        if 'buscar_candles' in globals():
+            dados_reais = buscar_candles()
+            
         if dados_reais and len(dados_reais) > 0:
             resultado = analisar_candles(dados_reais)
             indicadores = analisar_indicadores(dados_reais)
+            modo = 'REAL'
             return {
                 'dados': dados_reais,
                 'resultado': resultado,
                 'indicadores': indicadores,
                 'timestamp': datetime.now(),
-                'modo': 'REAL'
+                'modo': modo
             }
     except Exception as e:
-        print(f"Erro na API real: {e}")
+        print(f"⚠️ Falha na API real ({e}). Usando simulação.")
     
     # 2. Fallback: Gera dados simulados
     dados_fake = gerar_dados_simulados()
@@ -88,71 +92,61 @@ def carregar_dados_seguros():
     }
 
 def criar_grafico_candles(dados):
-    """Cria gráfico de candles adaptando-se ao número de colunas recebidas"""
-    
+    """Cria gráfico de candles adaptativo e seguro"""
     if not dados or len(dados) == 0:
-        st.warning("⚠️ Nenhum dado recebido.")
         return None
     
     try:
-        # Detecta quantas colunas têm os dados
         num_cols = len(dados[0])
         
-        # Define as colunas baseadas no tamanho real dos dados
+        # Define colunas dinamicamente
         if num_cols >= 12:
-            # Formato completo da Binance Klines
             columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume', 
                        'close_time', 'quote_volume', 'trades', 'taker_buy_base', 
-                       'taker_buy_quote', 'ignore']
+                       'taker_buy_quote', 'ignore'][:num_cols]
         elif num_cols >= 6:
-            # Formato simplificado (apenas OHLCV + Timestamp)
-            columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+            columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume'][:num_cols]
         else:
-            raise ValueError(f"Número inesperado de colunas nos dados: {num_cols}")
+            return None
 
-        # Cria o DataFrame usando apenas as colunas disponíveis
-        df = pd.DataFrame(dados, columns=columns[:num_cols])
+        df = pd.DataFrame(dados, columns=columns)
         
-        # Garante que as colunas críticas existam e são numéricas
+        # Validação Numérica
         required_cols = ['open', 'high', 'low', 'close']
         for col in required_cols:
             if col not in df.columns:
-                raise KeyError(f"Coluna '{col}' não encontrada nos dados")
+                return None
             df[col] = pd.to_numeric(df[col], errors='coerce')
             
-        if 'volume' in df.columns:
-            df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
-
-        # Remove linhas inválidas
         df.dropna(subset=required_cols, inplace=True)
         
         if df.empty:
-            st.error("❌ Dados vazios após limpeza.")
             return None
 
-        # Converte timestamp se existir
+        # Eixo X
         if 'timestamp' in df.columns:
             x_axis = pd.to_datetime(df['timestamp'], unit='ms')
         else:
-            x_axis = range(len(df)) # Fallback para índice simples
+            x_axis = range(len(df))
 
-        # Cria o gráfico
         fig = go.Figure(data=[go.Candlestick(
             x=x_axis,
             open=df['open'],
             high=df['high'],
             low=df['low'],
             close=df['close'],
-            name='BTCUSDT'
+            name='Price',
+            increasing_line_color='#26a69a',
+            decreasing_line_color='#ef5350'
         )])
         
         fig.update_layout(
-            title="📈 Candlestick Chart - BTC/USDT",
+            title=f"📈 Candlestick Chart - {SIMBOLO}",
             yaxis_title="Preço ($)",
-            xaxis_title="Tempo",
             template="plotly_dark",
             height=400,
-            xaxis_rangeslider_visible=False
+            xaxis_rangeslider_visible=False,
+            margin=dict(l=20, r=20, t=40, b=20)
         )
         
         return fig
@@ -161,65 +155,31 @@ def criar_grafico_candles(dados):
         st.error(f"❌ Erro ao processar candles: {str(e)}")
         return None
 
+def criar_gauge_score(score):
+    """Cria um medidor visual para o Score"""
+    fig = go.Figure(go.Indicator(
+        mode = "gauge+number",
+        value = score,
+        domain = {'x': [0, 1], 'y': [0, 1]},
+        title = {'text': "Confiança do Sinal"},
+        gauge = {
+            'axis': {'range': [None, 100]},
+            'bar': {'color': "#ffffff"},
+            'steps': [
+                {'range': [0, 50], 'color': "#f7b7c2"},
+                {'range': [50, 70], 'color': "#ffdac1"},
+                {'range': [70, 100], 'color': "#b5ead7"}],
+            'threshold': {
+                'line': {'color': "red", 'width': 4},
+                'thickness': 0.75,
+                'value': 70}
+        }
+    ))
+    fig.update_layout(height=250, margin=dict(l=20, r=20, t=20, b=20), paper_bgcolor="#1e1e1e", font={'color': "white"})
+    return fig
 
-def criar_grafico_volume(dados):
-    """Cria gráfico de volume adaptativo"""
-    
-    if not dados or len(dados) == 0:
-        return None
-        
-    try:
-        num_cols = len(dados[0])
-        
-        if num_cols >= 12:
-            columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume', 
-                       'close_time', 'quote_volume', 'trades', 'taker_buy_base', 
-                       'taker_buy_quote', 'ignore']
-        elif num_cols >= 6:
-            columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
-        else:
-             # Se tiver menos de 6, talvez seja só preço? Vamos assumir estrutura mínima
-             columns = ['timestamp', 'open', 'high', 'low', 'close']
-             # Volume não existe, então saímos ou usamos zeros
-             st.info("ℹ️ Dados de volume indisponíveis neste formato.")
-             return None
+# --- INTERFACE PRINCIPAL ---
 
-        df = pd.DataFrame(dados, columns=columns[:num_cols])
-        
-        if 'volume' not in df.columns:
-            return None
-            
-        df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
-        
-        if 'timestamp' in df.columns:
-            x_axis = pd.to_datetime(df['timestamp'], unit='ms')
-        else:
-            x_axis = range(len(df))
-
-        fig = go.Figure(data=[go.Bar(
-            x=x_axis,
-            y=df['volume'],
-            name='Volume',
-            marker_color='#8884d8'
-        )])
-        
-        fig.update_layout(
-            title='Volume de Negociação',
-            yaxis_title='Volume',
-            xaxis_title='Tempo',
-            height=300,
-            template="plotly_dark"
-        )
-        
-        return fig
-
-    except Exception as e:
-        st.error(f"❌ Erro ao processar volume: {str(e)}")
-        return None
-
-# --- INTERFACE ---
-
-# Cabeçalho
 st.title("🤖 Luk Bot Trader Dashboard")
 
 # Carrega dados seguros
@@ -227,11 +187,11 @@ dados_info = carregar_dados_seguros()
 
 # Banner de status
 if dados_info['modo'] == 'SIMULADO':
-    st.warning("⚠️ **MODO DEMONSTRAÇÃO:** A API da Binance está bloqueada neste servidor. Exibindo dados simulados.")
+    st.warning("⚠️ **MODO DEMONSTRAÇÃO:** A API da Binance está bloqueada neste servidor. Exibindo dados simulados para fins visuais.")
 else:
     st.success("✅ **CONEXÃO REAL:** Dados vindos diretamente da Binance.")
 
-st.markdown(f"**Monitorando:** {SIMBOLO} | **Atualização:** {TEMPO_ENTRE_ANALISES}s")
+st.markdown(f"**Monitorando:** `{SIMBOLO}` | **Intervalo:** `{TEMPO_ENTRE_ANALISES}s`")
 
 # Desempacota os dados
 dados = dados_info['dados']
@@ -245,100 +205,118 @@ col1, col2, col3, col4 = st.columns(4)
 
 with col1:
     preco_atual = indicadores.get('preco_atual', 0)
-    st.metric(
-        label="💰 Preço Atual",
-        value=f"${preco_atual:,.2f}",
-        delta=f"{resultado.get('media_variacoes', 0):+.3f}%"
-    )
+    delta_preco = resultado.get('media_variacoes', 0)
+    st.metric(label="💰 Preço Atual", value=f"${preco_atual:,.2f}", delta=f"{delta_preco:+.3f}%")
 
 with col2:
-    score_estimado = resultado.get('score', 0) # Assumindo que analisar_candles retorna score ou calculamos aqui
-    # Nota: Se sua função analisar_candles não retorna score direto, ajuste aqui.
-    # Para segurança, vamos usar a interpretação dos indicadores
     tendencia = indicadores.get('interpretacao', {}).get('tendencia', 'NEUTRA')
-    st.metric(
-        label="📈 Tendência",
-        value=tendencia,
-        delta="Alta" if tendencia == 'ALTA' else ("Baixa" if tendencia == 'BAIXA' else "Neutra")
-    )
+    emoji_tend = "" if tendencia == 'ALTA' else ("🔴" if tendencia == 'BAIXA' else "⚪")
+    st.metric(label="📈 Tendência", value=f"{emoji_tend} {tendencia}")
 
 with col3:
     rsi_val = indicadores.get('rsi', 50)
-    st.metric(
-        label="📊 RSI (14)",
-        value=f"{rsi_val:.1f}",
-        delta=indicadores.get('interpretacao', {}).get('rsi_status', 'NEUTRO')
-    )
+    rsi_status = indicadores.get('interpretacao', {}).get('rsi_status', 'NEUTRO')
+    st.metric(label="📊 RSI (14)", value=f"{rsi_val:.1f}", delta=rsi_status)
 
 with col4:
-    st.metric(
-        label="💵 Capital (Simulado)",
-        value=f"${gerenciador.capital:,.2f}",
-        delta=f"${gerenciador.lucro_do_dia:+.2f} hoje"
-    )
+    # Calcula score aproximado baseado nos indicadores atuais para o gauge
+    # Nota: No backtest real usamos a lógica completa. Aqui é uma estimativa visual rápida.
+    score_estimado = 0
+    if tendencia != 'NEUTRA': score_estimado += 40
+    if rsi_status in ['SOBREVENDIDO', 'SOBRECOMPRADO']: score_estimado += 30
+    if indicadores.get('cruzamento'): score_estimado += 30
+    score_estimado = min(score_estimado, 100)
+    
+    st.metric(label="🎯 Score Estimado", value=f"{score_estimado}/100")
 
 st.divider()
 
-# --- INDICADORES TÉCNICOS ---
-st.subheader("📐 Indicadores Técnicos")
+# --- GAUGE VISUAL DO SCORE ---
+col_gauge, col_text = st.columns([1, 2])
+with col_gauge:
+    fig_gauge = criar_gauge_score(score_estimado)
+    st.plotly_chart(fig_gauge, use_container_width=True)
 
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    st.write("**SMA 20:**")
-    sma = indicadores.get('sma_20')
-    if sma:
-        st.write(f"${sma:,.2f}")
-        if preco_atual > sma:
-            st.success("🟢 Preço ACIMA da média (Alta)")
-        else:
-            st.error("🔴 Preço ABAIXO da média (Baixa)")
+with col_text:
+    st.write("**Interpretação:**")
+    if score_estimado >= 70:
+        st.success("🟢 **SINAL FORTE:** Condições favoráveis para entrada.")
+    elif score_estimado >= 50:
+        st.warning("🟡 **ATENÇÃO:** Mercado incerto. Aguardar confirmação.")
     else:
-        st.write("N/A")
-
-with col2:
-    st.write("**RSI (14):**")
-    if rsi_val:
-        st.write(f"{rsi_val:.2f}")
-        if rsi_val >= 70:
-            st.warning("⚠️ SOBRECOMPRADO (pode cair)")
-        elif rsi_val <= 30:
-            st.info("💡 SOBREVENDIDO (pode subir)")
-        else:
-            st.write("➡️ Neutro")
-    else:
-        st.write("N/A")
-
-with col3:
-    st.write("**Tendência Geral:**")
-    if tendencia == 'ALTA':
-        st.success(f"📈 {tendencia}")
-    elif tendencia == 'BAIXA':
-        st.error(f"📉 {tendencia}")
-    else:
-        st.write(f"⚖️ {tendencia}")
+        st.error("🔴 **EVITAR:** Baixa confiança ou tendência indefinida.")
+    
+    st.caption(f"*Baseado em Tendência, RSI e Cruzamentos.*")
 
 st.divider()
 
 # --- GRÁFICOS ---
-st.subheader("📈 Gráficos")
+st.subheader("📈 Gráficos de Mercado")
 
 tab1, tab2 = st.tabs(["Candles", "Volume"])
 
 with tab1:
     fig_candles = criar_grafico_candles(dados)
-    st.plotly_chart(fig_candles, use_container_width=True)
+    if fig_candles:
+        st.plotly_chart(fig_candles, use_container_width=True)
+    else:
+        st.info("Sem dados suficientes para desenhar candles.")
 
 with tab2:
-    fig_volume = criar_grafico_volume(dados)
-    st.plotly_chart(fig_volume, use_container_width=True)
+    # Lógica Adaptativa para Volume
+    if dados and len(dados) > 0:
+        num_cols = len(dados[0])
+        
+        # Define as colunas corretamente baseado no tamanho dos dados
+        if num_cols >= 12:
+            # Formato completo da Binance (usa só as primeiras 6 para o gráfico)
+            full_columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume', 
+                            'close_time', 'quote_volume', 'trades', 'taker_buy_base', 
+                            'taker_buy_quote', 'ignore']
+            df_vol = pd.DataFrame(dados, columns=full_columns[:num_cols])
+        elif num_cols >= 6:
+            # Formato simplificado
+            simple_columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+            df_vol = pd.DataFrame(dados, columns=simple_columns[:num_cols])
+        else:
+            st.info("Dados insuficientes para volume.")
+            df_vol = None
+
+        if df_vol is not None and 'volume' in df_vol.columns:
+            # Converte tipos para garantir que plotem
+            df_vol['volume'] = pd.to_numeric(df_vol['volume'], errors='coerce')
+            
+            # Garante que o timestamp exista e converta
+            if 'timestamp' in df_vol.columns:
+                df_vol['timestamp'] = pd.to_datetime(df_vol['timestamp'], unit='ms')
+            else:
+                # Fallback se não tiver timestamp (não deveria acontecer com dados reais/fakes bem feitos)
+                df_vol['timestamp'] = range(len(df_vol))
+
+            fig_vol = go.Figure(data=[go.Bar(
+                x=df_vol['timestamp'], 
+                y=df_vol['volume'], 
+                marker_color='#8884d8',
+                name='Volume'
+            )])
+            
+            fig_vol.update_layout(
+                title='📊 Volume de Negociação', 
+                template="plotly_dark", 
+                height=300,
+                margin=dict(l=20, r=20, t=40, b=20)
+            )
+            st.plotly_chart(fig_vol, use_container_width=True)
+        else:
+            st.info("Coluna de volume não encontrada nos dados.")
+    else:
+        st.info("Sem dados de volume disponíveis.")
 
 st.divider()
 
-# --- MEMÓRIA DO BOT (HISTÓRICO REAL) ---
-st.subheader("💾 Histórico de Operações Reais")
+# --- HISTÓRICO LOCAL (SE EXISTIR) ---
+st.subheader("💾 Histórico de Operações (Local)")
 
-# Tenta ler o arquivo histórico local (se rodar localmente) ou JSON commitado
 historico_path = "historico_operacoes.json"
 
 if os.path.exists(historico_path):
@@ -347,18 +325,16 @@ if os.path.exists(historico_path):
             historico = json.load(f)
         
         if historico:
-            # Resumo simples
             total_ops = len(historico)
             acertos = sum(1 for op in historico if op.get('lucro_prejuizo', 0) > 0)
             lucro_total = sum(op.get('lucro_prejuizo', 0) for op in historico)
             
             c1, c2, c3 = st.columns(3)
             c1.metric("Total Ops", total_ops)
-            c2.metric("Acertos", f"{acertos}/{total_ops}")
+            c2.metric("Taxa Acerto", f"{(acertos/total_ops*100):.1f}%")
             c3.metric("Lucro Total", f"${lucro_total:+.2f}")
             
-            # Tabela
-            df_hist = pd.DataFrame(historico[-10:]) # Últimas 10
+            df_hist = pd.DataFrame(historico[-10:])
             cols_display = [c for c in ['data', 'tipo', 'preco_entrada', 'preco_saida', 'lucro_prejuizo', 'motivo_fechamento'] if c in df_hist.columns]
             st.dataframe(df_hist[cols_display], use_container_width=True)
         else:
@@ -367,48 +343,8 @@ if os.path.exists(historico_path):
     except Exception as e:
         st.error(f"Erro lendo histórico: {e}")
 else:
-    st.info("ℹ️ Nenhum arquivo de histórico encontrado. O bot precisa operar primeiro para gerar registros.")
+    st.info("ℹ️ Nenhum arquivo de histórico encontrado. Execute o bot localmente para gerar registros.")
 
-# --- BACKTEST (VISUALIZAÇÃO) ---
-st.divider()
-st.subheader("🔬 Resultados de Backtest")
-
-backtest_path = "curva_backtest.json"
-
-if os.path.exists(backtest_path):
-    try:
-        with open(backtest_path, 'r', encoding='utf-8') as f:
-            curva = json.load(f)
-        
-        if isinstance(curva, list) and len(curva) > 0:
-            col1, col2 = st.columns(2)
-            col1.metric("Capital Inicial", f"${curva[0]:.2f}")
-            final_cap = curva[-1]
-            pct_change = ((final_cap - curva[0]) / curva[0]) * 100
-            col2.metric("Capital Final", f"${final_cap:.2f}", 
-                        delta=f"{pct_change:+.2f}%")
-            
-            fig_capital = go.Figure(data=[go.Scatter(
-                y=curva,
-                mode="lines",
-                name="Capital",
-                line=dict(color="green", width=2)
-            )])
-            fig_capital.update_layout(
-                title="Curva de Capital (Backtest)",
-                yaxis_title="Capital ($)",
-                xaxis_title="Iterações",
-                height=350
-            )
-            st.plotly_chart(fig_capital, use_container_width=True)
-        else:
-            st.warning("Dados de backtest inválidos.")
-            
-    except Exception as e:
-        st.error(f"Erro carregando backtest: {e}")
-else:
-    st.info("Rodar `python backtest.py` localmente para gerar a curva de capital.")
-    
 # --- RODAPÉ ---
 st.divider()
 st.markdown(f"*Última atualização: {dados_info['timestamp'].strftime('%H:%M:%S')} | Modo: {dados_info['modo']}*")
