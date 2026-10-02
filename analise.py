@@ -1,22 +1,44 @@
 # analise.py
-# Funções de análise de mercado
+# Funções de análise de mercado (Adaptado para OKX via CCXT)
 
-import requests
-from config import SIMBOLO, INTERVALO, LIMITE_CANDLES, URL_KLINES
+import ccxt
+import config as cfg
+
+# Variável global para reutilizar a conexão e evitar rate limits
+_exchange = None
+
+def _get_exchange():
+    global _exchange
+    if _exchange is None:
+        _exchange = ccxt.okx({
+            'apiKey': cfg.OKX_API_KEY,
+            'secret': cfg.OKX_SECRET,
+            'password': cfg.OKX_PASSPHRASE,
+            'enableRateLimit': True,
+        })
+        if cfg.USAR_TESTNET:
+            _exchange.set_sandbox_mode(True)
+    return _exchange
 
 
 def buscar_candles():
-    """Busca os candles mais recentes da Binance"""
+    """Busca os candles mais recentes da OKX via CCXT"""
     try:
-        params = {
-            "symbol": SIMBOLO,
-            "interval": INTERVALO,
-            "limit": LIMITE_CANDLES
+        exchange = _get_exchange()
+        
+        # Mapeamento de intervalos (Timeframes) do formato comum para o formato da OKX
+        intervalo_map = {
+            '1m': '1m', '3m': '3m', '5m': '5m', '15m': '15m', '30m': '30m',
+            '1h': '1H', '2h': '2H', '4h': '4H', '6h': '6H', '12h': '12H',
+            '1d': '1D', '1w': '1W', '1M': '1M'
         }
-        resposta = requests.get(URL_KLINES, params=params, timeout=10)
-        resposta.raise_for_status()
-        return resposta.json()
-    except requests.exceptions.RequestException as e:
+        okx_interval = intervalo_map.get(cfg.INTERVALO, '1m')
+        
+        # Busca os dados OHLCV: [timestamp, open, high, low, close, volume]
+        ohlcv = exchange.fetch_ohlcv(cfg.SIMBOLO, timeframe=okx_interval, limit=cfg.LIMITE_CANDLES)
+        return ohlcv
+        
+    except Exception as e:
         print(f"❌ Erro ao buscar candles: {e}")
         return None
 
@@ -111,6 +133,7 @@ def classificar_forca(resultado):
     else:
         return "ESTAVEL"
 
+
 def calcular_score(resultado):
     """
     Calcula um score de confiança de 0 a 100
@@ -153,8 +176,6 @@ def gerar_sinal_inteligente(resultado):
     Gera sinal baseado no score de confiança
     Retorna: (sinal, score, explicacao)
     """
-    from config import SCORE_MINIMO_COMPRA, SCORE_MINIMO_VENDA
-    
     score = calcular_score(resultado)
     tendencia = detectar_tendencia(resultado)
     forca = classificar_forca(resultado)
@@ -167,12 +188,14 @@ def gerar_sinal_inteligente(resultado):
     explicacao.append(f"Score: {score}/100")
     
     # Decisão final
-    if tendencia == "ALTA" and score >= SCORE_MINIMO_COMPRA:
+    if tendencia == "ALTA" and score >= cfg.SCORE_MINIMO_COMPRA:
         return "COMPRA", score, explicacao
-    elif tendencia == "BAIXA" and score >= SCORE_MINIMO_VENDA:
+    elif tendencia == "BAIXA" and score >= cfg.SCORE_MINIMO_VENDA:
         return "VENDA", score, explicacao
     else:
         return "AGUARDAR", score, explicacao
+
+
 def gerar_sinal_com_indicadores(resultado, indicadores, dados=None):
     """
     Gera sinal combinando análise de candles + indicadores técnicos.
@@ -185,7 +208,6 @@ def gerar_sinal_com_indicadores(resultado, indicadores, dados=None):
     Returns:
         tuple: (sinal, score, explicacao)
     """
-    from config import SCORE_MINIMO_COMPRA, SCORE_MINIMO_VENDA
     from indicadores import mercado_volatil
     
     score = 0
@@ -236,9 +258,9 @@ def gerar_sinal_com_indicadores(resultado, indicadores, dados=None):
     # Decisão final
     tendencia = detectar_tendencia(resultado)
     
-    if tendencia == "ALTA" and score >= SCORE_MINIMO_COMPRA:
+    if tendencia == "ALTA" and score >= cfg.SCORE_MINIMO_COMPRA:
         return "COMPRA", score, explicacao
-    elif tendencia == "BAIXA" and score >= SCORE_MINIMO_VENDA:
+    elif tendencia == "BAIXA" and score >= cfg.SCORE_MINIMO_VENDA:
         return "VENDA", score, explicacao
     else:
         return "AGUARDAR", score, explicacao

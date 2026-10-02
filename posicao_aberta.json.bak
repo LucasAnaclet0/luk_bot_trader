@@ -1,0 +1,14 @@
+{
+  "simbolo": "XRPUSDT",
+  "symbol": "XRPUSDT",
+  "base": "XRP",
+  "moeda": "XRP",
+  "tipo": "COMPRA",
+  "quantidade": 64.6,
+  "preco_entrada": 1.5456,
+  "valor_investido": 99.84576,
+  "stop_loss": 1.514688,
+  "take_profit": 1.591968,
+  "aberta_em": "2026-10-02T09:31:02",
+  "atualizado_em": "2026-10-02T09:31:02"
+}

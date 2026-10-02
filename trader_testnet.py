@@ -1,137 +1,513 @@
 # trader_testnet.py
-# Executa ordens reais na Binance Testnet
+# Executa ordens reais na OKX Testnet (Adaptado para CCXT)
+# Multi-Symbol + cooldown pós-stop + venda parcial segura
+
+import time
+from datetime import datetime
+
+import config as _cfg
 
 from trading import comprar_mercado, vender_mercado, obter_saldo, obter_preco
-from memoria import salvar_operacao, salvar_posicao, carregar_posicao, limpar_posicao
-from config import STOP_LOSS_PERCENTUAL, TAKE_PROFIT_PERCENTUAL
+from memoria import (
+    salvar_operacao,
+    salvar_posicao,
+    carregar_posicoes,
+    limpar_posicao,
+)
+from logger_bot import log_info, log_erro, log_operacao
 
 
+# ==========================================
+# HELPERS
+# ==========================================
+def _norm_symbol(value):
+    if value is None:
+        return ""
+    # Normaliza para formato com hífen (ex: BTC-USDT)
+    s = str(value).strip().upper().replace("/", "")
+    if s.endswith("USDT") and not s.endswith("-USDT"):
+        return s[:-4] + "-USDT"
+    return s
+
+
+def _safe_float(value, default=0.0):
+    try:
+        if value is None or value == "":
+            return float(default)
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _safe_int(value, default=0):
+    try:
+        if value is None or value == "":
+            return int(default)
+        return int(float(value))
+    except Exception:
+        return int(default)
+
+
+def _normalizar_pct(valor, negativo=False):
+    v = _safe_float(valor, 0.0)
+    if abs(v) > 1.0:
+        v = v / 100.0
+    if negativo:
+        return -abs(v)
+    return abs(v)
+
+
+STOP_LOSS_PERCENTUAL = getattr(_cfg, "STOP_LOSS_PERCENTUAL", -0.02)
+TAKE_PROFIT_PERCENTUAL = getattr(_cfg, "TAKE_PROFIT_PERCENTUAL", 0.02)
+COOLDOWN_STOP_MINUTOS = _safe_int(getattr(_cfg, "COOLDOWN_STOP_MINUTOS", 30), 30)
+
+_STOP_LOSS_PCT = _normalizar_pct(STOP_LOSS_PERCENTUAL, negativo=True)
+_TAKE_PROFIT_PCT = _normalizar_pct(TAKE_PROFIT_PERCENTUAL, negativo=False)
+_COOLDOWN_STOP_SEGUNDOS = COOLDOWN_STOP_MINUTOS * 60
+
+
+# ==========================================
+# TRADER MULTI-SYMBOL
+# ==========================================
 class TraderTestnet:
     """
-    Executa compras e vendas REAIS na testnet.
+    Executa compras e vendas REAIS na testnet (OKX via CCXT).
+    Suporta múltiplos símbolos simultaneamente.
     Regra do spot: só vendemos o que temos.
     """
-    
-    def __init__(self, client, simbolo, valor_operacao):
+
+    def __init__(self, client, symbol_padrao, valor_operacao):
         self.client = client
-        self.simbolo = simbolo
-        self.valor_operacao = valor_operacao
-        self.moeda = simbolo.replace("USDT", "")
-        self.posicao = None
+        self.symbol_padrao = _norm_symbol(symbol_padrao) or "BTC-USDT"
+        self.valor_operacao = _safe_float(valor_operacao, 100.0)
         self.historico = []
-        
-        # AULA 10: recupera posição se o bot foi reiniciado
-        posicao_salva = carregar_posicao()
-        if posicao_salva:
-            self.posicao = posicao_salva
-            print(f"\n📂 POSIÇÃO RECUPERADA DO ARQUIVO:")
-            print(f"   {posicao_salva['quantidade']:.6f} @ ${posicao_salva['preco_entrada']:.2f}")
-    
-    def tem_posicao(self):
-        """Verifica se tem posição aberta"""
-        return self.posicao is not None
-    
-    def abrir_compra(self):
-        """Executa compra real na testnet"""
-        if self.tem_posicao():
+        self.posicoes = {}
+        self._cooldowns = {}
+
+        try:
+            posicoes_salvas = carregar_posicoes() or {}
+        except Exception as e:
+            log_erro(f"Falha ao carregar posições salvas: {e}")
+            posicoes_salvas = {}
+
+        for key, pos in posicoes_salvas.items():
+            symbol = _norm_symbol(
+                key
+                or (pos.get("simbolo") if isinstance(pos, dict) else None)
+                or (pos.get("symbol") if isinstance(pos, dict) else None)
+            )
+
+            if not symbol or symbol == "_DEFAULT":
+                symbol = self.symbol_padrao
+
+            pos_normalizada = self._normalizar_posicao(pos, symbol)
+            if pos_normalizada:
+                self.posicoes[symbol] = pos_normalizada
+
+        if self.posicoes:
+            log_info(f"📂 {len(self.posicoes)} posição(ões) recuperada(s) do arquivo:")
+            for sym, p in self.posicoes.items():
+                base = p.get("base") or sym.replace("-USDT", "").replace("USDT", "")
+                log_info(
+                    f"   {sym}: {_safe_float(p.get('quantidade'), 0):.6f} {base} "
+                    f"@ ${_safe_float(p.get('preco_entrada'), 0):.2f}"
+                )
+
+    # ==========================================
+    # NORMALIZAÇÃO
+    # ==========================================
+    @staticmethod
+    def _normalizar_posicao(posicao, symbol: str):
+        if not isinstance(posicao, dict):
             return None
-        
-        ordem = comprar_mercado(self.client, self.simbolo, self.valor_operacao)
+
+        symbol = _norm_symbol(symbol)
+        if not symbol:
+            return None
+
+        p = dict(posicao)
+        # Extrai o nome da moeda base (ex: BTC de BTC-USDT)
+        base = symbol.replace("-USDT", "").replace("USDT", "")
+
+        qtd = _safe_float(p.get("quantidade"), 0.0)
+        entrada = _safe_float(p.get("preco_entrada"), 0.0)
+        investido = _safe_float(p.get("valor_investido"), 0.0)
+
+        if qtd <= 0 or entrada <= 0:
+            return None
+
+        if investido <= 0:
+            investido = qtd * entrada
+
+        stop = _safe_float(p.get("stop_loss"), 0.0)
+        tp = _safe_float(p.get("take_profit"), 0.0)
+
+        if stop <= 0:
+            stop = entrada * (1 + _STOP_LOSS_PCT)
+
+        if tp <= 0:
+            tp = entrada * (1 + _TAKE_PROFIT_PCT)
+
+        p["simbolo"] = symbol
+        p["symbol"] = symbol
+        p["base"] = base
+        p["moeda"] = base
+        p.setdefault("tipo", "COMPRA")
+        p.setdefault("aberta_em", datetime.now().isoformat(timespec="seconds"))
+        p["atualizado_em"] = datetime.now().isoformat(timespec="seconds")
+
+        p["quantidade"] = qtd
+        p["preco_entrada"] = entrada
+        p["valor_investido"] = investido
+        p["stop_loss"] = stop
+        p["take_profit"] = tp
+
+        return p
+
+    # ==========================================
+    # COMPATIBILIDADE
+    # ==========================================
+    @property
+    def symbol(self):
+        return self.symbol_padrao
+
+    @property
+    def simbolo(self):
+        return self.symbol_padrao
+
+    @property
+    def moeda(self):
+        base = self.symbol_padrao
+        return base.replace("-USDT", "").replace("USDT", "")
+
+    @property
+    def posicao(self):
+        return self.posicoes.get(self.symbol_padrao)
+
+    def tem_posicao(self, symbol=None):
+        sym = _norm_symbol(symbol or self.symbol_padrao)
+        return sym in self.posicoes and self.posicoes[sym] is not None
+
+    def get_posicao(self, symbol):
+        sym = _norm_symbol(symbol)
+        return self.posicoes.get(sym)
+
+    def get_todas_posicoes(self):
+        return dict(self.posicoes)
+
+    # ==========================================
+    # COOLDOWN
+    # ==========================================
+    def marcar_cooldown(self, symbol: str):
+        sym = _norm_symbol(symbol)
+        if not sym or _COOLDOWN_STOP_SEGUNDOS <= 0:
+            return
+
+        self._cooldowns[sym] = time.time() + _COOLDOWN_STOP_SEGUNDOS
+        log_info(
+            f"[{sym}] Cooldown ativado por "
+            f"{_COOLDOWN_STOP_SEGUNDOS/60:.0f} minutos após stop."
+        )
+
+    def em_cooldown(self, symbol: str) -> bool:
+        sym = _norm_symbol(symbol)
+        expires = self._cooldowns.get(sym, 0)
+
+        if time.time() < expires:
+            return True
+
+        if sym in self._cooldowns:
+            del self._cooldowns[sym]
+
+        return False
+
+    # ==========================================
+    # COMPRAS
+    # ==========================================
+    def abrir_compra(self, symbol=None):
+        sym = _norm_symbol(symbol or self.symbol_padrao)
+        base = sym.replace("-USDT", "").replace("USDT", "")
+
+        if self.tem_posicao(sym):
+            log_info(f"[{sym}] Já possui posição aberta, ignorando compra")
+            return None
+
+        if self.em_cooldown(sym):
+            log_info(f"[{sym}] Em cooldown pós-stop. Compra ignorada.")
+            return None
+
+        ordem = comprar_mercado(self.client, sym, self.valor_operacao)
         if not ordem:
+            log_erro(f"[{sym}] Falha ao executar compra")
             return None
-        
-        qtd = float(ordem.get('executedQty', 0))
-        gasto = float(ordem.get('cummulativeQuoteQty', 0))
-        
+
+        # --- MUDANÇA CRÍTICA PARA CCXT ---
+        # O CCXT padroniza as respostas. Usamos 'filled' e 'cost'
+        qtd = _safe_float(ordem.get("filled"), 0.0)
+        gasto = _safe_float(ordem.get("cost"), 0.0)
+
         if qtd <= 0:
-            print("⚠️ Ordem executada com quantidade zero.")
+            log_erro(f"[{sym}] Ordem executada com quantidade zero")
             return None
-        
+
         if gasto <= 0:
             gasto = self.valor_operacao
-        
+
         preco_medio = gasto / qtd
-        
-        self.posicao = {
+
+        nova_posicao = {
+            "simbolo": sym,
+            "symbol": sym,
+            "base": base,
+            "moeda": base,
             "tipo": "COMPRA",
             "quantidade": qtd,
             "preco_entrada": preco_medio,
             "valor_investido": gasto,
-            "stop_loss": preco_medio * (1 + STOP_LOSS_PERCENTUAL),
-            "take_profit": preco_medio * (1 + TAKE_PROFIT_PERCENTUAL)
+            "stop_loss": preco_medio * (1 + _STOP_LOSS_PCT),
+            "take_profit": preco_medio * (1 + _TAKE_PROFIT_PCT),
+            "aberta_em": datetime.now().isoformat(timespec="seconds"),
+            "atualizado_em": datetime.now().isoformat(timespec="seconds"),
         }
-        
-        print(f"\n{'='*50}")
-        print(f"🟢 COMPRA REAL EXECUTADA NA TESTNET!")
-        print(f"   Quantidade: {qtd:.6f} {self.moeda}")
+
+        self.posicoes[sym] = nova_posicao
+
+        print(f"\n{'=' * 50}")
+        print("🟢 COMPRA REAL EXECUTADA NA TESTNET!")
+        print(f"   Símbolo: {sym}")
+        print(f"   Quantidade: {qtd:.6f} {base}")
         print(f"   Preço médio: ${preco_medio:.2f}")
         print(f"   Gasto: ${gasto:.2f}")
-        print(f"   Stop Loss: ${self.posicao['stop_loss']:.2f}")
-        print(f"   Take Profit: ${self.posicao['take_profit']:.2f}")
-        print(f"{'='*50}\n")
-        
-        salvar_posicao(self.posicao)
-        
-        return self.posicao
-    
-    def verificar_saida(self, preco_atual):
-        """Verifica se deve fechar por stop loss ou take profit"""
-        if not self.tem_posicao():
+        print(f"   Stop Loss: ${nova_posicao['stop_loss']:.2f}")
+        print(f"   Take Profit: ${nova_posicao['take_profit']:.2f}")
+        print(f"{'=' * 50}\n")
+
+        salvar_posicao(nova_posicao)
+        log_operacao("COMPRA", -gasto, f"{sym} @ ${preco_medio:.2f}")
+
+        return nova_posicao
+
+    # ==========================================
+    # SAÍDA / STOP / TAKE
+    # ==========================================
+    def verificar_saida(self, preco_atual, symbol=None):
+        sym = _norm_symbol(symbol or self.symbol_padrao)
+        pos = self.posicoes.get(sym)
+
+        if not pos:
             return None
-        
-        variacao = (preco_atual - self.posicao["preco_entrada"]) / self.posicao["preco_entrada"]
-        
-        if variacao <= STOP_LOSS_PERCENTUAL:
+
+        entrada = _safe_float(pos.get("preco_entrada"), 0.0)
+        preco_atual = _safe_float(preco_atual, 0.0)
+
+        if entrada <= 0 or preco_atual <= 0:
+            return None
+
+        stop = _safe_float(pos.get("stop_loss"), 0.0)
+        take = _safe_float(pos.get("take_profit"), 0.0)
+
+        if stop <= 0:
+            stop = entrada * (1 + _STOP_LOSS_PCT)
+        if take <= 0:
+            take = entrada * (1 + _TAKE_PROFIT_PCT)
+
+        if preco_atual <= stop:
             return "STOP_LOSS"
-        if variacao >= TAKE_PROFIT_PERCENTUAL:
+        if preco_atual >= take:
             return "TAKE_PROFIT"
+
         return None
-    
-    def fechar_venda(self, motivo):
-        """Vende TUDO que tem e registra o resultado"""
-        if not self.tem_posicao():
+
+    # ==========================================
+    # VENDAS
+    # ==========================================
+    def fechar_venda(self, motivo, symbol=None):
+        sym = _norm_symbol(symbol or self.symbol_padrao)
+        pos = self.posicoes.get(sym)
+
+        if not pos:
             return None
-        
-        qtd_real = obter_saldo(self.client, self.moeda)
+
+        base = pos.get("base") or sym.replace("-USDT", "").replace("USDT", "")
+
+        qtd_posicao = _safe_float(pos.get("quantidade"), 0.0)
+        investido_total = _safe_float(pos.get("valor_investido"), 0.0)
+        entrada = _safe_float(pos.get("preco_entrada"), 0.0)
+
+        if qtd_posicao <= 0 or entrada <= 0:
+            log_erro(f"[{sym}] Posição inválida, removendo do controle")
+            self.posicoes.pop(sym, None)
+            limpar_posicao(sym)
+            return None
+
+        if investido_total <= 0:
+            investido_total = qtd_posicao * entrada
+
+        qtd_real = _safe_float(obter_saldo(self.client, base), 0.0)
+
         if qtd_real <= 0:
-            self.posicao = None
-            limpar_posicao()
-            return None
-        
-        ordem = vender_mercado(self.client, self.simbolo, qtd_real)
+            operacao_fantasma = {
+                "simbolo": sym, "symbol": sym, "base": base, "moeda": base, "tipo": "COMPRA",
+                "preco_entrada": entrada, "preco_saida": 0.0, "quantidade": 0.0,
+                "quantidade_original": qtd_posicao, "valor_investido": investido_total,
+                "variacao_percentual": 0.0, "lucro_prejuizo": 0.0, "motivo_fechamento": "SALDO_ZERO",
+                "parcial": False, "observacao": "Posição fantasma: saldo na exchange era zero.",
+                "data": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+            }
+            self.historico.append(operacao_fantasma)
+            salvar_operacao(operacao_fantasma)
+            log_erro(f"[{sym}] SALDO ZERO: posição fantasma removida.")
+            self.posicoes.pop(sym, None)
+            limpar_posicao(sym)
+            return operacao_fantasma
+
+        qtd_solicitada = min(qtd_real, qtd_posicao)
+
+        if qtd_solicitada <= 0:
+            operacao_invalida = {
+                "simbolo": sym, "symbol": sym, "base": base, "moeda": base, "tipo": "COMPRA",
+                "preco_entrada": entrada, "preco_saida": 0.0, "quantidade": 0.0,
+                "quantidade_original": qtd_posicao, "valor_investido": investido_total,
+                "variacao_percentual": 0.0, "lucro_prejuizo": 0.0, "motivo_fechamento": "QUANTIDADE_INVALIDA",
+                "parcial": False, "observacao": "Quantidade solicitada para venda ficou zero.",
+                "data": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+            }
+            self.historico.append(operacao_invalida)
+            salvar_operacao(operacao_invalida)
+            log_erro(f"[{sym}] QUANTIDADE INVALIDA: posição removida.")
+            self.posicoes.pop(sym, None)
+            limpar_posicao(sym)
+            return operacao_invalida
+
+        ordem = vender_mercado(self.client, sym, qtd_solicitada)
         if not ordem:
+            log_erro(f"[{sym}] Falha ao executar venda")
             return None
-        
-        recebido = float(ordem.get('cummulativeQuoteQty', 0))
+
+        # --- MUDANÇA CRÍTICA PARA CCXT ---
+        qtd_executada = _safe_float(ordem.get("filled", qtd_solicitada))
+        recebido = _safe_float(ordem.get("cost", 0.0))
+
+        if qtd_executada <= 0:
+            log_erro(f"[{sym}] Venda executada com quantidade zero")
+            return None
+
         if recebido <= 0:
-            recebido = qtd_real * obter_preco(self.client, self.simbolo)
-        
-        investido = self.posicao["valor_investido"]
-        lucro = recebido - investido
-        variacao_pct = (lucro / investido) * 100 if investido > 0 else 0
-        preco_saida = recebido / qtd_real if qtd_real > 0 else 0
-        
+            preco_ref = _safe_float(obter_preco(self.client, sym), 0.0)
+            if preco_ref > 0:
+                recebido = qtd_executada * preco_ref
+            else:
+                log_erro(f"[{sym}] Não foi possível calcular valor recebido da venda")
+                return None
+
+        if qtd_posicao > 0:
+            proporcao = min(1.0, qtd_executada / qtd_posicao)
+            investido_parcial = investido_total * proporcao
+        else:
+            proporcao = 1.0
+            investido_parcial = investido_total
+
+        if investido_parcial <= 0:
+            investido_parcial = qtd_executada * entrada
+
+        lucro = recebido - investido_parcial
+        variacao_pct = (lucro / investido_parcial) * 100 if investido_parcial > 0 else 0.0
+        preco_saida = recebido / qtd_executada if qtd_executada > 0 else 0.0
+
+        fechamento_parcial = qtd_executada < (qtd_posicao * 0.999)
+
         operacao = {
-            "tipo": "COMPRA",
-            "preco_entrada": self.posicao["preco_entrada"],
-            "preco_saida": preco_saida,
-            "quantidade": qtd_real,
-            "valor_investido": investido,
-            "variacao_percentual": variacao_pct,
-            "lucro_prejuizo": lucro,
-            "motivo_fechamento": motivo
+            "simbolo": sym, "symbol": sym, "base": base, "moeda": base, "tipo": "COMPRA",
+            "preco_entrada": entrada, "preco_saida": preco_saida, "quantidade": qtd_executada,
+            "quantidade_original": qtd_posicao, "valor_investido": investido_parcial,
+            "variacao_percentual": variacao_pct, "lucro_prejuizo": lucro, "motivo_fechamento": motivo,
+            "parcial": fechamento_parcial, "data": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
         }
+
         self.historico.append(operacao)
         salvar_operacao(operacao)
-        self.posicao = None
-        limpar_posicao()
-        
+
+        if fechamento_parcial:
+            restante = max(0.0, qtd_posicao - qtd_executada)
+            investido_restante = max(0.0, investido_total - investido_parcial)
+
+            if restante <= max(1e-12, qtd_posicao * 0.001):
+                self.posicoes.pop(sym, None)
+                limpar_posicao(sym)
+                log_info(f"[{sym}] Fechamento parcial completou posição por resíduo mínimo")
+            else:
+                pos["quantidade"] = restante
+                pos["valor_investido"] = investido_restante
+                pos["atualizado_em"] = datetime.now().isoformat(timespec="seconds")
+                self.posicoes[sym] = pos
+                salvar_posicao(pos)
+                log_info(f"[{sym}] Fechamento parcial: vendeu {qtd_executada:.6f}, sobraram {restante:.6f}")
+        else:
+            self.posicoes.pop(sym, None)
+            limpar_posicao(sym)
+
+        if motivo == "STOP_LOSS":
+            self.marcar_cooldown(sym)
+
         emoji = "🟢" if lucro > 0 else "🔴"
-        print(f"\n{'='*50}")
-        print(f"{emoji} VENDA REAL EXECUTADA: {motivo}")
+        tipo_fechamento = "PARCIAL" if fechamento_parcial else "TOTAL"
+
+        print(f"\n{'=' * 50}")
+        print(f"{emoji} VENDA REAL EXECUTADA: {motivo} ({tipo_fechamento})")
+        print(f"   Símbolo: {sym}")
         print(f"   Entrada: ${operacao['preco_entrada']:.2f}")
         print(f"   Saída:   ${preco_saida:.2f}")
+        print(f"   Quantidade vendida: {qtd_executada:.6f} {base}")
         print(f"   Resultado: ${lucro:+.2f} ({variacao_pct:+.2f}%)")
-        print(f"{'='*50}\n")
-        
+        print(f"{'=' * 50}\n")
+
+        log_operacao("VENDA", lucro, f"{sym} {motivo} {tipo_fechamento}")
+
         return operacao
+
+    # ==========================================
+    # MONITORAMENTO MULTI-SYMBOL
+    # ==========================================
+    def verificar_todas_posicoes(self, precos_atuais: dict):
+        operacoes_fechadas = []
+        if not isinstance(precos_atuais, dict):
+            return operacoes_fechadas
+
+        for sym in list(self.posicoes.keys()):
+            preco = precos_atuais.get(sym)
+            if preco is None:
+                continue
+            motivo = self.verificar_saida(preco, symbol=sym)
+            if motivo:
+                op = self.fechar_venda(motivo, symbol=sym)
+                if op:
+                    operacoes_fechadas.append(op)
+        return operacoes_fechadas
+
+    def mostrar_status_multi(self, precos_atuais: dict = None):
+        if not self.posicoes:
+            print("   ⏸️ Nenhuma posição aberta")
+            return
+
+        print(f"   📊 {len(self.posicoes)} posição(ões) aberta(s):")
+        for sym, pos in self.posicoes.items():
+            base = pos.get("base") or sym.replace("-USDT", "").replace("USDT", "")
+            qtd = _safe_float(pos.get("quantidade"), 0.0)
+            entrada = _safe_float(pos.get("preco_entrada"), 0.0)
+            linha = f"      🎯 {sym}: {qtd:.6f} {base} @ ${entrada:.2f}"
+
+            if isinstance(precos_atuais, dict):
+                preco = _safe_float(precos_atuais.get(sym), 0.0)
+                if preco > 0 and entrada > 0 and qtd > 0:
+                    variacao = (preco - entrada) / entrada * 100
+                    pnl = (preco - entrada) * qtd
+                    linha += f" | PnL: ${pnl:+.2f} ({variacao:+.2f}%)"
+            print(linha)
+
+    def fechar_todas_posicoes(self, motivo="ENCERRAMENTO"):
+        ops = []
+        for sym in list(self.posicoes.keys()):
+            op = self.fechar_venda(motivo, symbol=sym)
+            if op:
+                ops.append(op)
+        return ops

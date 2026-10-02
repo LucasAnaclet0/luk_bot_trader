@@ -1,0 +1,90 @@
+{
+  "schema_version": 2,
+  "updated_at": "2026-10-02T09:31:02",
+  "positions": {
+    "ETHUSDT": {
+      "simbolo": "ETHUSDT",
+      "symbol": "ETHUSDT",
+      "base": "ETH",
+      "moeda": "ETH",
+      "tipo": "COMPRA",
+      "quantidade": 0.0371,
+      "preco_entrada": 2693.7099999999996,
+      "valor_investido": 99.936641,
+      "stop_loss": 2639.8357999999994,
+      "take_profit": 2774.5212999999994,
+      "aberta_em": "2026-10-01T12:05:04",
+      "atualizado_em": "2026-10-01T12:05:04"
+    },
+    "ADAUSDT": {
+      "simbolo": "ADAUSDT",
+      "symbol": "ADAUSDT",
+      "base": "ADA",
+      "moeda": "ADA",
+      "tipo": "COMPRA",
+      "quantidade": 397.1,
+      "preco_entrada": 0.25179999999999997,
+      "valor_investido": 99.98978,
+      "stop_loss": 0.24676399999999996,
+      "take_profit": 0.259354,
+      "aberta_em": "2026-10-02T01:21:42",
+      "atualizado_em": "2026-10-02T01:21:42"
+    },
+    "SOLUSDT": {
+      "simbolo": "SOLUSDT",
+      "symbol": "SOLUSDT",
+      "base": "SOL",
+      "moeda": "SOL",
+      "tipo": "COMPRA",
+      "quantidade": 0.817,
+      "preco_entrada": 122.30000000000001,
+      "valor_investido": 99.9191,
+      "stop_loss": 119.85400000000001,
+      "take_profit": 125.96900000000001,
+      "aberta_em": "2026-10-02T01:29:13",
+      "atualizado_em": "2026-10-02T01:29:13"
+    },
+    "BCHUSDT": {
+      "simbolo": "BCHUSDT",
+      "symbol": "BCHUSDT",
+      "base": "BCH",
+      "moeda": "BCH",
+      "tipo": "COMPRA",
+      "quantidade": 0.318,
+      "preco_entrada": 314.2,
+      "valor_investido": 99.9156,
+      "stop_loss": 307.916,
+      "take_profit": 323.626,
+      "aberta_em": "2026-10-02T04:17:08",
+      "atualizado_em": "2026-10-02T04:17:08"
+    },
+    "DOGEUSDT": {
+      "simbolo": "DOGEUSDT",
+      "symbol": "DOGEUSDT",
+      "base": "DOGE",
+      "moeda": "DOGE",
+      "tipo": "COMPRA",
+      "quantidade": 1037.0,
+      "preco_entrada": 0.09635,
+      "valor_investido": 99.91495,
+      "stop_loss": 0.094423,
+      "take_profit": 0.09924050000000001,
+      "aberta_em": "2026-10-02T04:55:17",
+      "atualizado_em": "2026-10-02T04:55:17"
+    },
+    "XRPUSDT": {
+      "simbolo": "XRPUSDT",
+      "symbol": "XRPUSDT",
+      "base": "XRP",
+      "moeda": "XRP",
+      "tipo": "COMPRA",
+      "quantidade": 64.6,
+      "preco_entrada": 1.5456,
+      "valor_investido": 99.84576,
+      "stop_loss": 1.514688,
+      "take_profit": 1.591968,
+      "aberta_em": "2026-10-02T09:31:02",
+      "atualizado_em": "2026-10-02T09:31:02"
+    }
+  }
+}

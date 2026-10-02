@@ -329,3 +329,64 @@ def mercado_volatil(dados, periodo=14, threshold_pct=0.05):
     
     atr_pct = (atr / precos_close[-1]) * 100
     return atr_pct >= threshold_pct, atr_pct
+def calcular_bollinger_bands(closes, period=20, std_dev_mult=2):
+    """Calcula Bandas de Bollinger manualmente."""
+    if len(closes) < period:
+        return None, None, None
+    
+    sma = sum(closes[-period:]) / period
+    variance = sum((x - sma) ** 2 for x in closes[-period:]) / period
+    std_dev = variance ** 0.5
+    
+    upper = sma + (std_dev * std_dev_mult)
+    lower = sma - (std_dev * std_dev_mult)
+    
+    return upper, sma, lower
+
+def calcular_atr(highs, lows, closes, period=14):
+    """Calcula Average True Range (volatilidade)."""
+    if len(closes) < period + 1:
+        return None
+    
+    true_ranges = []
+    for i in range(1, min(len(closes), period + 1)):
+        high_low = highs[i] - lows[i]
+        high_close = abs(highs[i] - closes[i-1])
+        low_close = abs(lows[i] - closes[i-1])
+        tr = max(high_low, high_close, low_close)
+        true_ranges.append(tr)
+    
+    if not true_ranges:
+        return None
+        
+    atr = sum(true_ranges) / len(true_ranges)
+    return atr
+
+def analisar_indicadores_avancados(candles_lista):
+    """
+    Função wrapper para integrar novos indicadores ao fluxo existente.
+    Recebe candles no formato lista [ts, open, high, low, close, vol].
+    """
+    if not candles_lista or len(candles_lista) < 20:
+        return {}
+        
+    # Extrai arrays
+    opens = [c[1] for c in candles_lista]
+    highs = [c[2] for c in candles_lista]
+    lows = [c[3] for c in candles_lista]
+    closes = [c[4] for c in candles_lista]
+    
+    # Calcula BB
+    bb_upper, bb_mid, bb_lower = calcular_bollinger_bands(closes)
+    
+    # Calcula ATR
+    atr_val = calcular_atr(highs, lows, closes)
+    
+    # Retorno estruturado para uso no scanner
+    return {
+        "bb_upper": bb_upper,
+        "bb_middle": bb_mid,
+        "bb_lower": bb_lower,
+        "atr": atr_val,
+        "trend_strength": (bb_upper - bb_lower) / bb_mid if bb_mid else 0 # Largura da banda normalizada
+    }
