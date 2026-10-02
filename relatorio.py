@@ -262,19 +262,22 @@ def _calcular_stats(ops: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def _calcular_drawdown(ops: List[Dict[str, Any]]) -> Tuple[float, float, float, float]:
+def _calcular_drawdown(ops: List[Dict[str, Any]], saldo_base: float = 0.0) -> Tuple[float, float, float, float]:
     """
     Retorna:
-    (max_drawdown_usd, max_drawdown_pct, equity_atual, pico_equity)
+    (max_drawdown_usd, max_drawdown_pct, equity_pnl, pico_pnl)
 
-    Drawdown calculado sobre PnL realizado acumulado.
+    FIX: o % agora é medido sobre o CAPITAL TOTAL (saldo_base + pico do PnL),
+    e não sobre o PnL acumulado puro (que começa ~0 e inflava o % no início
+    da sessão, gerando artefatos tipo "418%").
+    O valor em USD (max_dd) permanece idêntico; só o denominador do % mudou.
     """
     ordenadas = _ordenar_por_data(ops)
 
-    equity = 0.0
-    pico = 0.0
-    max_dd = 0.0
-    max_dd_pct = 0.0
+    equity = 0.0          # PnL realizado acumulado
+    pico = 0.0            # pico do PnL acumulado até aqui
+    max_dd = 0.0          # maior queda em USD
+    max_dd_pct = 0.0      # maior queda em % (sobre capital total)
 
     for op in ordenadas:
         pnl = _safe_float(op.get("lucro_prejuizo"), 0.0)
@@ -283,13 +286,16 @@ def _calcular_drawdown(ops: List[Dict[str, Any]]) -> Tuple[float, float, float, 
         if equity > pico:
             pico = equity
 
-        dd = pico - equity
+        dd = pico - equity   # queda a partir do topo local (em USD)
 
         if dd > max_dd:
             max_dd = dd
 
-        if pico > 0:
-            dd_pct = (dd / pico) * 100
+        # denominador robusto: capital de referência + topo do PnL.
+        # se saldo_base=0 (simulação pura), degradece graciosamente pro comportamento antigo.
+        pico_total = saldo_base + pico
+        if pico_total > 0:
+            dd_pct = (dd / pico_total) * 100
             if dd_pct > max_dd_pct:
                 max_dd_pct = dd_pct
 
@@ -447,7 +453,9 @@ def gerar_relatorio(
     ops_ordenadas = _ordenar_por_data(ops_periodo)
 
     stats = _calcular_stats(ops_ordenadas)
-    max_dd, max_dd_pct, equity, pico = _calcular_drawdown(ops_ordenadas)
+    max_dd, max_dd_pct, equity, pico = _calcular_drawdown(
+        ops_ordenadas, saldo_base=_safe_float(saldo_usdt, 0.0)
+    )
 
     por_simbolo = _por_simbolo(ops_ordenadas)
     por_motivo = _por_motivo(ops_ordenadas)
@@ -583,9 +591,9 @@ def gerar_relatorio(
         linhas.append("")
         linhas.append("📉 *DRAWDOWN REALIZADO*")
         linhas.append(f"Max drawdown: -${max_dd:,.2f}")
-        linhas.append(f"Max drawdown %: {max_dd_pct:.2f}%")
-        linhas.append(f"Equity realizada atual: {_fmt_money(equity)}")
-        linhas.append(f"Pico de equity: {_fmt_money(pico)}")
+        linhas.append(f"Max drawdown %: {max_dd_pct:.2f}%  (sobre capital total)")
+        linhas.append(f"PnL realizado acum.: {_fmt_money(equity)}")
+        linhas.append(f"Pico de PnL acum.: {_fmt_money(pico)}")
 
     linhas.append("")
 
