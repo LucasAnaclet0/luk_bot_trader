@@ -1,6 +1,7 @@
 # trader_testnet.py
 # Executa ordens reais na OKX Testnet (Adaptado para CCXT)
 # Multi-Symbol + cooldown pós-stop + venda parcial segura
+# CORRIGIDO: Adicionado Tempo de Graça (Grace Period) para evitar fechamento imediato pós-compra
 
 import time
 from datetime import datetime
@@ -64,6 +65,9 @@ COOLDOWN_STOP_MINUTOS = _safe_int(getattr(_cfg, "COOLDOWN_STOP_MINUTOS", 30), 30
 _STOP_LOSS_PCT = _normalizar_pct(STOP_LOSS_PERCENTUAL, negativo=True)
 _TAKE_PROFIT_PCT = _normalizar_pct(TAKE_PROFIT_PERCENTUAL, negativo=False)
 _COOLDOWN_STOP_SEGUNDOS = COOLDOWN_STOP_MINUTOS * 60
+
+# NOVO: Tempo de graça em segundos para ignorar checks de saída logo após a compra
+GRACE_PERIOD_SECONDS = 90 
 
 
 # ==========================================
@@ -236,24 +240,88 @@ class TraderTestnet:
             log_info(f"[{sym}] Em cooldown pós-stop. Compra ignorada.")
             return None
 
-        ordem = comprar_mercado(self.client, sym, self.valor_operacao)
-        if not ordem:
-            log_erro(f"[{sym}] Falha ao executar compra")
+        # 1. Envia a ordem inicial
+        try:
+            ordem_inicial = comprar_mercado(self.client, sym, self.valor_operacao)
+        except Exception as e:
+            log_erro(f"[{sym}] Exceção ao enviar ordem de compra: {e}")
+            return None
+        
+        if not ordem_inicial:
+            log_erro(f"[{sym}] Falha ao enviar ordem de compra (retornou None)")
             return None
 
-        # --- MUDANÇA CRÍTICA PARA CCXT ---
-        # O CCXT padroniza as respostas. Usamos 'filled' e 'cost'
-        qtd = _safe_float(ordem.get("filled"), 0.0)
-        gasto = _safe_float(ordem.get("cost"), 0.0)
-
-        if qtd <= 0:
-            log_erro(f"[{sym}] Ordem executada com quantidade zero")
+        order_id = ordem_inicial.get('id')
+        
+        # VERIFICAÇÃO CRÍTICA: Se não houver ID, não podemos rastrear. Aborta com segurança.
+        if not order_id:
+            log_erro(f"[{sym}] Ordem enviada mas SEM ID válido. Não é possível confirmar execução.")
             return None
 
-        if gasto <= 0:
-            gasto = self.valor_operacao
+        # 2. VERIFICAÇÃO ROBUSTA: Espera a OKX confirmar o preenchimento real
+        max_retries = 5
+        retry_delay = 1.0 
+        
+        ordem_final = None
+        qtd_executada = 0.0
+        custo_executado = 0.0
 
-        preco_medio = gasto / qtd
+        for i in range(max_retries):
+            try:
+                # Tenta buscar o status atualizado
+                # Nota: Algumas versões do CCXT podem precisar de 'params' extra, 
+                # mas para OKX Spot, id + symbol geralmente basta.
+                ordem_atual = self.client.fetch_order(id=order_id, symbol=sym)
+                
+                if not ordem_atual:
+                    raise ValueError("fetch_order retornou None/vazio")
+
+                status = str(ordem_atual.get('status', '')).lower()
+                qtd_executada = _safe_float(ordem_atual.get('filled'), 0.0)
+                custo_executado = _safe_float(ordem_atual.get('cost'), 0.0)
+
+                # Caso Sucesso Total
+                if status == 'closed' and qtd_executada > 0:
+                    ordem_final = ordem_atual
+                    break
+                
+                # Caso Cancelado/Rejeitado
+                elif status in ['canceled', 'cancelled', 'rejected']:
+                    log_erro(f"[{sym}] Ordem cancelada/rejeitada pela exchange. Status: {status}")
+                    return None
+                
+                # Caso Parcialmente Preenchida (aceita se tiver qty > 0)
+                elif qtd_executada > 0:
+                    ordem_final = ordem_atual
+                    break
+                    
+                # Caso Ainda Pendente ('open' ou vazio)
+                else:
+                    if i < max_retries - 1:
+                        time.sleep(retry_delay)
+                        
+            except Exception as e:
+                # Loga o erro específico da consulta para debug futuro
+                log_erro(f"[{sym}] Erro ao consultar status da ordem ({i+1}/{max_retries}): {type(e).__name__}: {e}")
+                if i < max_retries - 1:
+                    time.sleep(retry_delay)
+                continue
+
+        # 3. VALIDAÇÃO FINAL ANTES DE REGISTRAR
+        if ordem_final is None or qtd_executada <= 0:
+            log_erro(f"[{sym}] FALHA CRÍTICA: Ordem enviada mas NÃO confirmada após tentativas. Saldo pode ter sido debitado indevidamente!")
+            return None
+
+        if custo_executado <= 0:
+            # Fallback: calcula custo estimado pelo preço médio atual
+            preco_ref = _safe_float(obter_preco(self.client, sym), 0.0)
+            if preco_ref > 0:
+                custo_executado = qtd_executada * preco_ref
+            else:
+                log_erro(f"[{sym}] Não foi possível determinar custo da execução")
+                return None
+
+        preco_medio = custo_executado / qtd_executada
 
         nova_posicao = {
             "simbolo": sym,
@@ -261,9 +329,9 @@ class TraderTestnet:
             "base": base,
             "moeda": base,
             "tipo": "COMPRA",
-            "quantidade": qtd,
+            "quantidade": qtd_executada,
             "preco_entrada": preco_medio,
-            "valor_investido": gasto,
+            "valor_investido": custo_executado,
             "stop_loss": preco_medio * (1 + _STOP_LOSS_PCT),
             "take_profit": preco_medio * (1 + _TAKE_PROFIT_PCT),
             "aberta_em": datetime.now().isoformat(timespec="seconds"),
@@ -273,20 +341,19 @@ class TraderTestnet:
         self.posicoes[sym] = nova_posicao
 
         print(f"\n{'=' * 50}")
-        print("🟢 COMPRA REAL EXECUTADA NA TESTNET!")
+        print("🟢 COMPRA REAL CONFIRMADA NA TESTNET!")
         print(f"   Símbolo: {sym}")
-        print(f"   Quantidade: {qtd:.6f} {base}")
-        print(f"   Preço médio: ${preco_medio:.2f}")
-        print(f"   Gasto: ${gasto:.2f}")
-        print(f"   Stop Loss: ${nova_posicao['stop_loss']:.2f}")
-        print(f"   Take Profit: ${nova_posicao['take_profit']:.2f}")
+        print(f"   Quantidade: {qtd_executada:.6f} {base}")
+        print(f"   Preço médio: ${preco_medio:.4f}")
+        print(f"   Gasto Real: ${custo_executado:.2f}")
+        print(f"   Stop Loss: ${nova_posicao['stop_loss']:.4f}")
+        print(f"   Take Profit: ${nova_posicao['take_profit']:.4f}")
         print(f"{'=' * 50}\n")
 
         salvar_posicao(nova_posicao)
-        log_operacao("COMPRA", -gasto, f"{sym} @ ${preco_medio:.2f}")
+        log_operacao("COMPRA", -custo_executado, f"{sym} @ ${preco_medio:.4f}")
 
         return nova_posicao
-
     # ==========================================
     # SAÍDA / STOP / TAKE
     # ==========================================
@@ -296,6 +363,24 @@ class TraderTestnet:
 
         if not pos:
             return None
+
+        # --- NOVA LÓGICA DE TEMPO DE GRAÇA ---
+        aberta_em_str = pos.get("aberta_em")
+        if aberta_em_str:
+            try:
+                aberta_em_dt = datetime.fromisoformat(aberta_em_str.replace('Z', '+00:00'))
+                agora = datetime.now(opena_em_dt.tzinfo) if aberta_em_dt.tzinfo else datetime.now()
+                
+                delta_segundos = (agora - aberta_em_dt).total_seconds()
+                
+                # Ignora checks de stop/take nos primeiros GRACE_PERIOD_SECONDS
+                if delta_segundos < GRACE_PERIOD_SECONDS:
+                    # Log opcional para debug (comentado para não poluir)
+                    # log_info(f"[{sym}] Dentro do grace period ({delta_segundos:.0f}s/{GRACE_PERIOD_SECONDS}s). Ignorando check de saída.")
+                    return None 
+            except Exception:
+                pass # Se der erro na data, segue normal
+        # -------------------------------------------
 
         entrada = _safe_float(pos.get("preco_entrada"), 0.0)
         preco_atual = _safe_float(preco_atual, 0.0)
