@@ -1,6 +1,7 @@
 # main.py
 # Arquivo principal - o "cérebro" do bot
 # ATUALIZADO: Multi-Crypto + Auto-Discovery + Risk Management + PnL no status
+# BLINDAGEM FINAL: Tratamento de erros no Telegram e sincronização de saldo
 
 import asyncio
 import threading
@@ -17,7 +18,6 @@ from trading import criar_cliente, obter_saldo
 from trader_testnet import TraderTestnet
 from comandos import ListenerComandos
 from memoria import carregar_historico, resumo_historico
-
 from relatorio import gerar_relatorio
 
 import config as _cfg
@@ -110,27 +110,36 @@ if TELEGRAM_ATIVADO and TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
     notificador = NotificadorTelegram(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID)
 else:
     notificador = None
+
 # ==========================================
-# HOTFIX TELEGRAM MARKDOWN
-# Evita erro por underscores em STOP_LOSS, TAKE_PROFIT, SINAL_VENDA etc.
+# HOTFIX TELEGRAM MARKDOWN (BLINDADO)
+# Evita erro por underscores e caracteres especiais que quebram o parse.
+# Agora com try/except interno para não derrubar o loop se falhar.
 # ==========================================
 if notificador and hasattr(notificador, "enviar_mensagem"):
     _original_enviar_mensagem = notificador.enviar_mensagem
 
     def _enviar_mensagem_seguro(texto, *args, **kwargs):
-        texto = str(texto)
+        try:
+            texto = str(texto)
 
-        # Converte termos técnicos com underline para versão legível
-        texto = texto.replace("STOP_LOSS", "STOP LOSS")
-        texto = texto.replace("TAKE_PROFIT", "TAKE PROFIT")
-        texto = texto.replace("SINAL_VENDA", "SINAL VENDA")
-        texto = texto.replace("STOP_WATCHDOG", "STOP WATCHDOG")
-        texto = texto.replace("ENCERRAMENTO", "ENCERRAMENTO")
+            # Converte termos técnicos com underline para versão legível
+            texto = texto.replace("STOP_LOSS", "STOP LOSS")
+            texto = texto.replace("TAKE_PROFIT", "TAKE PROFIT")
+            texto = texto.replace("SINAL_VENDA", "SINAL VENDA")
+            texto = texto.replace("STOP_WATCHDOG", "STOP WATCHDOG")
+            texto = texto.replace("ENCERRAMENTO", "ENCERRAMENTO")
+            
+            # Segurança extra: remove qualquer underline restante que possa quebrar Markdown
+            # Cuidado: isso também remove underlines de nomes de variáveis, mas é aceitável para logs/notificações
+            texto = texto.replace("_", " ")
 
-        # Segurança extra: remove qualquer underline restante que possa quebrar Markdown
-        texto = texto.replace("_", " ")
-
-        return _original_enviar_mensagem(texto, *args, **kwargs)
+            return _original_enviar_mensagem(texto, *args, **kwargs)
+        
+        except Exception as e:
+            log_erro(f"[TELEGRAM] Falha ao enviar mensagem segura: {type(e).__name__}: {e}")
+            # Retorna False ou None para indicar falha, mas não trava o programa
+            return False
 
     notificador.enviar_mensagem = _enviar_mensagem_seguro
 
@@ -563,7 +572,13 @@ def montar_status():
     atual = _watchlist_atual()
 
     if trader and client:
-        usdt = obter_saldo(client, "USDT")
+        # Sincronização Fresca: Busca saldo atualizado da API
+        try:
+            usdt = obter_saldo(client, "USDT")
+        except Exception as e:
+            log_erro(f"Erro ao buscar saldo fresco: {e}")
+            usdt = 0.0
+            
         msg = f"📊 *STATUS DO BOT*\n\n💵 USDT: {_safe_float(usdt, 0):.2f}"
 
         posicoes = _posicoes_abertas_dict()
