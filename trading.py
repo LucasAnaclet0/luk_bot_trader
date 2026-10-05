@@ -3,7 +3,7 @@
 
 import ccxt
 import config as cfg
-
+from logger_bot import log_info, log_erro
 
 def criar_cliente():
     """Cria a conexão com a OKX Testnet (Demo)"""
@@ -52,47 +52,70 @@ def obter_preco(client, simbolo="BTC-USDT"):
 
 
 def comprar_mercado(client, simbolo, valor_usdt):
-    """
-    Compra a mercado: gasta X USDT comprando a moeda
-    Exemplo: comprar_mercado(client, "BTC-USDT", 100) = compra 100 dólares em BTC
-    """
+    """Compra a mercado gastando X USDT"""
     try:
-        # 1. Busca o preço para calcular a quantidade exata
-        preco = obter_preco(client, simbolo)
-        if preco <= 0:
-            print(f"❌ Preço inválido para {simbolo}")
+        # Obtém preço atual para calcular quantidade
+        ticker = client.fetch_ticker(simbolo)
+        preco = float(ticker['last'])
+        if preco <= 0: 
             return None
-        
-        # 2. Calcula a quantidade
+            
         quantidade = valor_usdt / preco
         
-        # 3. Executa a ordem de compra via CCXT
+        # CORREÇÃO: create_market_order NÃO recebe 'type'. 
+        # Apenas symbol, side e amount.
         ordem = client.create_market_order(
             symbol=simbolo,
-            type='market',
             side='buy',
             amount=quantidade
         )
         
-        print(f"✅ COMPRA executada: {valor_usdt} USDT em {simbolo}")
+        log_info(f"✅ COMPRA executada: {valor_usdt} USDT em {simbolo}")
         return ordem
+        
     except Exception as e:
-        print(f"❌ Erro na compra: {e}")
+        log_erro(f"❌ Erro na compra: {e}")
         return None
 
-
 def vender_mercado(client, simbolo, quantidade):
-    """Vende a mercado: vende X quantidade da moeda"""
+    """Vende a mercado X quantidade da moeda, com confirmacao robusta (fetch_order)."""
+    import time
     try:
-        # Executa a ordem de venda via CCXT
         ordem = client.create_market_order(
             symbol=simbolo,
-            type='market',
             side='sell',
             amount=quantidade
         )
-        print(f"✅ VENDA executada: {quantidade} {simbolo}")
-        return ordem
+        if not ordem or not ordem.get('id'):
+            log_erro(f"❌ Venda sem ID de ordem: {simbolo}")
+            return None
+
+        ordem_final = ordem
+        for i in range(5):
+            status = str(ordem_final.get('status', '')).lower()
+            filled = float(ordem_final.get('filled') or 0.0)
+
+            if status == 'closed' and filled > 0:
+                break
+            if status in ('canceled', 'cancelled', 'rejected', 'expired'):
+                log_erro(f"❌ Venda cancelada/rejeitada: {simbolo} ({status})")
+                return None
+
+            time.sleep(1.0)
+            try:
+                ordem_final = client.fetch_order(ordem['id'], simbolo)
+            except Exception as e:
+                log_erro(f"⚠️ Falha ao consultar venda ({i+1}/5): {e}")
+
+        filled = float(ordem_final.get('filled') or 0.0)
+        if filled <= 0:
+            log_erro(f"❌ Venda NAO confirmada (filled=0): {simbolo}")
+            return None
+
+        log_info(f"✅ VENDA executada: {filled} {simbolo}")
+        return ordem_final
+
     except Exception as e:
-        print(f"❌ Erro na venda: {e}")
+        log_erro(f"❌ Erro na venda: {e}")
         return None
+
