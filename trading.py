@@ -62,9 +62,9 @@ def comprar_mercado(client, simbolo, valor_usdt):
             
         quantidade = valor_usdt / preco
         
-        # CORREÇÃO: create_market_order NÃO recebe 'type'. 
+        # CORREÇÃO: amount=qtd NÃO recebe 'type'. 
         # Apenas symbol, side e amount.
-        ordem = client.create_market_order(
+        ordem = client.amount=qtd(
             symbol=simbolo,
             side='buy',
             amount=quantidade
@@ -81,15 +81,33 @@ def vender_mercado(client, simbolo, quantidade):
     """Vende a mercado X quantidade da moeda, com confirmacao robusta (fetch_order)."""
     import time
     try:
-        ordem = client.create_market_order(
+        # GUARDIAO DE POEIRA: valida quantidade antes de enviar
+        try:
+            qtd = float(client.amount_to_precision(simbolo, float(quantidade)))
+            _mkt = client.market(simbolo)
+            _min = float(((_mkt.get('limits') or {}).get('amount') or {}).get('min') or 0)
+            if qtd <= 0 or (_min and qtd < _min):
+                log_erro(f"❌ Venda abortada: {qtd} {simbolo} abaixo do mínimo {_min}")
+                return None
+        except Exception as e:
+            log_erro(f"⚠️ Falha ao validar quantidade: {e}")
+            qtd = float(quantidade)
+        
+        log_info(f"📤 Enviando venda: {qtd} {simbolo}")
+        
+        # CORRECAO CRITICA: usa create_order em vez de create_market_order
+        ordem = client.create_order(
             symbol=simbolo,
+            type='market',
             side='sell',
-            amount=quantidade
+            amount=qtd
         )
+        
         if not ordem or not ordem.get('id'):
             log_erro(f"❌ Venda sem ID de ordem: {simbolo}")
             return None
 
+        # CONFIRMACAO ROBUSTA: loop fetch_order ate filled > 0
         ordem_final = ordem
         for i in range(5):
             status = str(ordem_final.get('status', '')).lower()
@@ -118,4 +136,3 @@ def vender_mercado(client, simbolo, quantidade):
     except Exception as e:
         log_erro(f"❌ Erro na venda: {e}")
         return None
-
