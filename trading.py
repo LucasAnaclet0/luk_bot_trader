@@ -92,22 +92,22 @@ def vender_mercado(client, simbolo, quantidade):
         except Exception as e:
             log_erro(f"⚠️ Falha ao validar quantidade: {e}")
             qtd = float(quantidade)
-        
+
         log_info(f"📤 Enviando venda: {qtd} {simbolo}")
-        
-        # CORRECAO CRITICA: usa create_order em vez de create_market_order
+
+        # CORRECAO CRITICA: create_order padrao CCXT (nao create_market_order)
         ordem = client.create_order(
             symbol=simbolo,
             type='market',
             side='sell',
             amount=qtd
         )
-        
+
         if not ordem or not ordem.get('id'):
             log_erro(f"❌ Venda sem ID de ordem: {simbolo}")
             return None
 
-        # CONFIRMACAO ROBUSTA: loop fetch_order ate filled > 0
+        # CONFIRMACAO: loop fetch_order ate filled > 0 (igual ao lado da compra)
         ordem_final = ordem
         for i in range(5):
             status = str(ordem_final.get('status', '')).lower()
@@ -130,7 +130,7 @@ def vender_mercado(client, simbolo, quantidade):
             log_erro(f"❌ Venda NAO confirmada (filled=0): {simbolo}")
             return None
 
-        log_info(f"✅ VENDA executada: {filled} {simbolo}")
+        log_info(f"✅ VENDA CONFIRMADA: {filled} {simbolo}")
         return ordem_final
 
     except Exception as e:
