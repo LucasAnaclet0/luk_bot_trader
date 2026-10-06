@@ -50,29 +50,75 @@ def obter_preco(client, simbolo="BTC-USDT"):
         print(f"❌ Erro ao buscar preço: {e}")
         return 0.0
 
-
 def comprar_mercado(client, simbolo, valor_usdt):
-    """Compra a mercado gastando X USDT"""
+    """Compra a mercado usando valor_usdt, com confirmacao robusta (fetch_order)."""
+    import time
     try:
-        # Obtém preço atual para calcular quantidade
-        ticker = client.fetch_ticker(simbolo)
-        preco = float(ticker['last'])
-        if preco <= 0: 
+        valor = float(valor_usdt)
+
+        # 1) Preco atual e conversao valor -> quantidade
+        preco = obter_preco(client, simbolo)
+        if not preco or preco <= 0:
+            log_erro(f"❌ Preço inválido para {simbolo}: {preco}")
             return None
-            
-        quantidade = valor_usdt / preco
-        
-        # CORREÇÃO: amount=qtd NÃO recebe 'type'. 
-        # Apenas symbol, side e amount.
-        ordem = client.amount=qtd(
+        qtd = valor / preco
+
+        # 2) Trunca para a precisao do lote da exchange
+        try:
+            qtd = float(client.amount_to_precision(simbolo, qtd))
+        except Exception as e:
+            log_erro(f"⚠️ Falha ao ajustar precisão de {simbolo}: {e}")
+
+        # 3) Guardiao de poeira: quantidade minima negociavel
+        try:
+            _mkt = client.market(simbolo)
+            _min = float(((_mkt.get('limits') or {}).get('amount') or {}).get('min') or 0)
+        except Exception:
+            _min = 0.0
+        if qtd <= 0 or (_min and qtd < _min):
+            log_erro(f"❌ Compra abortada: {qtd} {simbolo} abaixo do mínimo {_min}")
+            return None
+
+        log_info(f"📤 Enviando compra: {qtd} {simbolo} (~${valor:.2f} a ${preco:.4f})")
+
+        # 4) Ordem market padrao CCXT
+        ordem = client.create_order(
             symbol=simbolo,
+            type='market',
             side='buy',
-            amount=quantidade
+            amount=qtd
         )
-        
-        log_info(f"✅ COMPRA executada: {valor_usdt} USDT em {simbolo}")
-        return ordem
-        
+
+        if not ordem or not ordem.get('id'):
+            log_erro(f"❌ Compra sem ID de ordem: {simbolo}")
+            return None
+
+        # 5) Confirmacao robusta via fetch_order (igual a venda)
+        ordem_final = ordem
+        for i in range(5):
+            status = str(ordem_final.get('status', '')).lower()
+            filled = float(ordem_final.get('filled') or 0.0)
+
+            if status == 'closed' and filled > 0:
+                break
+            if status in ('canceled', 'cancelled', 'rejected', 'expired'):
+                log_erro(f"❌ Compra cancelada/rejeitada: {simbolo} ({status})")
+                return None
+
+            time.sleep(1.0)
+            try:
+                ordem_final = client.fetch_order(ordem['id'], simbolo)
+            except Exception as e:
+                log_erro(f"⚠️ Falha ao consultar compra ({i+1}/5): {e}")
+
+        filled = float(ordem_final.get('filled') or 0.0)
+        if filled <= 0:
+            log_erro(f"❌ Compra NAO confirmada (filled=0): {simbolo}")
+            return None
+
+        log_info(f"✅ COMPRA CONFIRMADA: {filled} {simbolo}")
+        return ordem_final
+
     except Exception as e:
         log_erro(f"❌ Erro na compra: {e}")
         return None
