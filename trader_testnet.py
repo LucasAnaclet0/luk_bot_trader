@@ -430,7 +430,14 @@ class TraderTestnet:
 
         qtd_real = _safe_float(obter_saldo(self.client, base), 0.0)
 
-        if qtd_real <= 0:
+        # GUARDIAO DE POEIRA: saldo abaixo do minimo negociavel = fantasma
+        try:
+            _mkt = self.client.market(sym)
+            _min_amt = _safe_float(((_mkt.get('limits') or {}).get('amount') or {}).get('min'), 0.0)
+        except Exception:
+            _min_amt = 0.0
+        _limiar_poeira = max(_min_amt * 1.01, 0.00000001)  # 1% acima do mínimo
+        if qtd_real < _limiar_poeira:
             operacao_fantasma = {
                 "simbolo": sym, "symbol": sym, "base": base, "moeda": base, "tipo": "COMPRA",
                 "preco_entrada": entrada, "preco_saida": 0.0, "quantidade": 0.0,
