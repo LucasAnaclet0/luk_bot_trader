@@ -447,7 +447,7 @@ class TraderTestnet:
                 "data": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
             }
             self.historico.append(operacao_fantasma)
-            salvar_operacao(operacao_fantasma)
+            # salvar_operacao(operacao_fantasma)
             log_erro(f"[{sym}] SALDO ZERO: posição fantasma removida.")
             self.posicoes.pop(sym, None)
             limpar_posicao(sym)
