@@ -374,75 +374,94 @@ def _carregar_historico_seguro():
 
 
 def _abrir_compra_compat(trader_obj, symbol):
-    """
-    Abre compra compatível com versões antigas e novas do TraderTestnet.
-    """
+    """Chama abrir_compra uma única vez, sem repetir após exceções."""
     try:
-        sig = inspect.signature(trader_obj.abrir_compra)
-        params = sig.parameters
+        method = trader_obj.abrir_compra
+        params = inspect.signature(method).parameters
+    except (TypeError, ValueError, AttributeError) as exc:
+        log_erro(f"Não foi possível verificar a assinatura de abrir_compra: {exc}")
+        return None
 
-        for name, param in params.items():
-            if name == "self":
-                continue
-            if param.kind in (
-                inspect.Parameter.POSITIONAL_ONLY,
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            ):
-                return trader_obj.abrir_compra(symbol)
-
-        for name in ("symbol", "simbolo"):
-            if name in params and params[name].kind == inspect.Parameter.KEYWORD_ONLY:
-                return trader_obj.abrir_compra(**{name: symbol})
-
-        return trader_obj.abrir_compra()
-
-    except Exception:
-        try:
-            return trader_obj.abrir_compra(symbol)
-        except TypeError:
-            try:
-                return trader_obj.abrir_compra(simbolo=symbol)
-            except TypeError:
-                return trader_obj.abrir_compra()
-
-
-def _fechar_venda_compat(trader_obj, motivo, symbol):
-    """
-    Fecha venda compatível com versões antigas e novas do TraderTestnet.
-    """
-    try:
-        sig = inspect.signature(trader_obj.fechar_venda)
-        params = sig.parameters
-
-        for name in ("symbol", "simbolo"):
-            if name in params:
-                return trader_obj.fechar_venda(motivo, **{name: symbol})
-
+    if "symbol" in params:
+        param = params["symbol"]
+        if param.kind == inspect.Parameter.POSITIONAL_ONLY:
+            args, kwargs = (symbol,), {}
+        else:
+            args, kwargs = (), {"symbol": symbol}
+    elif "simbolo" in params:
+        param = params["simbolo"]
+        if param.kind == inspect.Parameter.POSITIONAL_ONLY:
+            args, kwargs = (symbol,), {}
+        else:
+            args, kwargs = (), {"simbolo": symbol}
+    elif any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params.values()):
+        args, kwargs = (symbol,), {}
+    elif any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        args, kwargs = (), {"symbol": symbol}
+    else:
         positional = [
             p for p in params.values()
-            if p.name != "self"
-            and p.kind in (
+            if p.kind in (
                 inspect.Parameter.POSITIONAL_ONLY,
                 inspect.Parameter.POSITIONAL_OR_KEYWORD,
             )
         ]
+        args, kwargs = ((symbol,), {}) if positional else ((), {})
 
-        if len(positional) >= 2:
-            return trader_obj.fechar_venda(motivo, symbol)
+    try:
+        return method(*args, **kwargs)
+    except Exception as exc:
+        log_erro(
+            f"abrir_compra lançou uma exceção; nenhuma nova tentativa será feita: {exc}"
+        )
+        return None
 
-        return trader_obj.fechar_venda(motivo)
 
-    except Exception:
-        try:
-            return trader_obj.fechar_venda(motivo, symbol=symbol)
-        except TypeError:
-            try:
-                return trader_obj.fechar_venda(motivo, symbol)
-            except TypeError:
-                try:
-                    return trader_obj.fechar_venda(motivo, simbolo=symbol)
-                except TypeError:
-                    return trader_obj.fechar_venda(motivo)
+def _fechar_venda_compat(trader_obj, motivo, symbol):
+    """Chama fechar_venda uma única vez, sem repetir após exceções."""
+    try:
+        method = trader_obj.fechar_venda
+        params = inspect.signature(method).parameters
+    except (TypeError, ValueError, AttributeError) as exc:
+        log_erro(f"Não foi possível verificar a assinatura de fechar_venda: {exc}")
+        return None
+
+    if "symbol" in params:
+        param = params["symbol"]
+        if param.kind == inspect.Parameter.POSITIONAL_ONLY:
+            args, kwargs = (motivo, symbol), {}
+        else:
+            args, kwargs = (motivo,), {"symbol": symbol}
+    elif "simbolo" in params:
+        param = params["simbolo"]
+        if param.kind == inspect.Parameter.POSITIONAL_ONLY:
+            args, kwargs = (motivo, symbol), {}
+        else:
+            args, kwargs = (motivo,), {"simbolo": symbol}
+    elif any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        args, kwargs = (motivo,), {"symbol": symbol}
+    else:
+        positional = [
+            p for p in params.values()
+            if p.kind in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            )
+        ]
+        if len(positional) >= 2 or any(
+            p.kind == inspect.Parameter.VAR_POSITIONAL for p in params.values()
+        ):
+            args, kwargs = (motivo, symbol), {}
+        else:
+            args, kwargs = (motivo,), {}
+
+    try:
+        return method(*args, **kwargs)
+    except Exception as exc:
+        log_erro(
+            f"fechar_venda lançou uma exceção; nenhuma nova tentativa será feita: {exc}"
+        )
+        return None
 
 
 def _garantir_posicoes_na_watchlist():
