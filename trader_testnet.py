@@ -428,60 +428,98 @@ class TraderTestnet:
         if investido_total <= 0:
             investido_total = qtd_posicao * entrada
 
-        qtd_real = _safe_float(obter_saldo(self.client, base), 0.0)
+        saldo_consultado = obter_saldo(self.client, base)
 
-        # GUARDIAO DE POEIRA: saldo abaixo do minimo negociavel = fantasma
+        # Falha de API nao significa saldo zero: preservar a posicao.
+        if saldo_consultado is None:
+            log_erro(
+                f"[{sym}] Saldo indisponivel na exchange. "
+                "Fechamento cancelado; posicao preservada."
+            )
+            return None
+
+        try:
+            qtd_real = float(saldo_consultado)
+        except (TypeError, ValueError):
+            log_erro(
+                f"[{sym}] Saldo recebido em formato invalido. "
+                "Fechamento cancelado; posicao preservada."
+            )
+            return None
+
+        if qtd_real < 0:
+            log_erro(
+                f"[{sym}] Saldo negativo inesperado. "
+                "Fechamento cancelado; posicao preservada."
+            )
+            return None
+
+        # SALDO BAIXO: preservar a posição para reconciliação.
+        # Saldo livre zero não prova que a posição seja fantasma:
+        # os ativos podem estar bloqueados ou exigir conferência manual.
         try:
             _mkt = self.client.market(sym)
-            _min_amt = _safe_float(((_mkt.get('limits') or {}).get('amount') or {}).get('min'), 0.0)
+            _min_amt = _safe_float(
+                ((_mkt.get('limits') or {}).get('amount') or {}).get('min'),
+                0.0
+            )
         except Exception:
             _min_amt = 0.0
-        _limiar_poeira = max(_min_amt * 1.01, 0.00000001)  # 1% acima do mínimo
+
+        _limiar_poeira = max(_min_amt * 1.01, 0.00000001)
         if qtd_real < _limiar_poeira:
-            operacao_fantasma = {
-                "simbolo": sym, "symbol": sym, "base": base, "moeda": base, "tipo": "COMPRA",
-                "preco_entrada": entrada, "preco_saida": 0.0, "quantidade": 0.0,
-                "quantidade_original": qtd_posicao, "valor_investido": investido_total,
-                "variacao_percentual": 0.0, "lucro_prejuizo": 0.0, "motivo_fechamento": "SALDO_ZERO",
-                "parcial": False, "observacao": "Posição fantasma: saldo na exchange era zero.",
-                "data": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-            }
-            self.historico.append(operacao_fantasma)
-            # salvar_operacao(operacao_fantasma)
-            log_erro(f"[{sym}] SALDO ZERO: posição fantasma removida.")
-            self.posicoes.pop(sym, None)
-            limpar_posicao(sym)
-            return operacao_fantasma
+            log_erro(
+                f"[{sym}] Saldo livre ({qtd_real}) abaixo do mínimo "
+                f"negociável ({_limiar_poeira}). Posição preservada "
+                "para reconciliação; nenhuma venda foi enviada."
+            )
+            return None
 
         qtd_solicitada = min(qtd_real, qtd_posicao)
 
         if qtd_solicitada <= 0:
-            operacao_invalida = {
-                "simbolo": sym, "symbol": sym, "base": base, "moeda": base, "tipo": "COMPRA",
-                "preco_entrada": entrada, "preco_saida": 0.0, "quantidade": 0.0,
-                "quantidade_original": qtd_posicao, "valor_investido": investido_total,
-                "variacao_percentual": 0.0, "lucro_prejuizo": 0.0, "motivo_fechamento": "QUANTIDADE_INVALIDA",
-                "parcial": False, "observacao": "Quantidade solicitada para venda ficou zero.",
-                "data": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-            }
-            self.historico.append(operacao_invalida)
-            salvar_operacao(operacao_invalida)
-            log_erro(f"[{sym}] QUANTIDADE INVALIDA: posição removida.")
-            self.posicoes.pop(sym, None)
-            limpar_posicao(sym)
-            return operacao_invalida
+            log_erro(
+                f"[{sym}] Quantidade solicitada inválida ({qtd_solicitada}). "
+                "Posição preservada para reconciliação."
+            )
+            return None
 
         ordem = vender_mercado(self.client, sym, qtd_solicitada)
         if not ordem:
             log_erro(f"[{sym}] Falha ao executar venda")
             return None
 
-        # --- MUDANÇA CRÍTICA PARA CCXT ---
-        qtd_executada = _safe_float(ordem.get("filled", qtd_solicitada))
-        recebido = _safe_float(ordem.get("cost", 0.0))
+        # Só processar a venda se a quantidade executada estiver explícita.
+        status_ordem = str(ordem.get("status") or "").lower()
+        if status_ordem != "closed":
+            log_erro(
+                f"[{sym}] Estado da venda não confirmado ({status_ordem or 'desconhecido'}). "
+                "Posição preservada para reconciliação."
+            )
+            return None
+
+        if ordem.get("filled") is None:
+            log_erro(
+                f"[{sym}] Resposta da venda sem quantidade executada. "
+                "Posição preservada para reconciliação."
+            )
+            return None
+
+        qtd_executada = _safe_float(ordem.get("filled"), 0.0)
+        recebido = _safe_float(ordem.get("cost"), 0.0)
 
         if qtd_executada <= 0:
-            log_erro(f"[{sym}] Venda executada com quantidade zero")
+            log_erro(
+                f"[{sym}] Quantidade vendida inválida ({qtd_executada}). "
+                "Posição preservada."
+            )
+            return None
+
+        if qtd_executada > qtd_solicitada * 1.001:
+            log_erro(
+                f"[{sym}] Quantidade executada ({qtd_executada}) excede "
+                f"a solicitada ({qtd_solicitada}). Posição preservada."
+            )
             return None
 
         if recebido <= 0:
@@ -492,10 +530,21 @@ class TraderTestnet:
                 log_erro(f"[{sym}] Não foi possível calcular valor recebido da venda")
                 return None
 
-        if qtd_posicao > 0:
-            proporcao = min(1.0, qtd_executada / qtd_posicao)
+        # A quantidade esperada considera o saldo confirmado antes da venda.
+        # Isso evita tratar taxas da compra como uma posicao ainda negociavel.
+        qtd_esperada_venda = min(qtd_real, qtd_posicao)
+
+        fechamento_parcial = (
+            qtd_executada < (qtd_esperada_venda * 0.999)
+        )
+
+        if fechamento_parcial and qtd_esperada_venda > 0:
+            # Distribui o investimento proporcionalmente ao saldo
+            # efetivamente negociável antes da venda.
+            proporcao = min(1.0, qtd_executada / qtd_esperada_venda)
             investido_parcial = investido_total * proporcao
         else:
+            # No fechamento total, contabilizar todo o investimento da posicao.
             proporcao = 1.0
             investido_parcial = investido_total
 
@@ -505,8 +554,6 @@ class TraderTestnet:
         lucro = recebido - investido_parcial
         variacao_pct = (lucro / investido_parcial) * 100 if investido_parcial > 0 else 0.0
         preco_saida = recebido / qtd_executada if qtd_executada > 0 else 0.0
-
-        fechamento_parcial = qtd_executada < (qtd_posicao * 0.999)
 
         operacao = {
             "simbolo": sym, "symbol": sym, "base": base, "moeda": base, "tipo": "COMPRA",
@@ -520,10 +567,12 @@ class TraderTestnet:
         salvar_operacao(operacao)
 
         if fechamento_parcial:
-            restante = max(0.0, qtd_posicao - qtd_executada)
+            # Usar o saldo negociavel confirmado antes da venda,
+            # evitando carregar taxas da compra como quantidade restante.
+            restante = max(0.0, qtd_esperada_venda - qtd_executada)
             investido_restante = max(0.0, investido_total - investido_parcial)
 
-            if restante <= max(1e-12, qtd_posicao * 0.001):
+            if restante <= max(1e-12, qtd_esperada_venda * 0.001):
                 self.posicoes.pop(sym, None)
                 limpar_posicao(sym)
                 log_info(f"[{sym}] Fechamento parcial completou posição por resíduo mínimo")

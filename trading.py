@@ -31,14 +31,13 @@ def criar_cliente():
 
 
 def obter_saldo(client, ativo):
-    """Mostra o saldo de um ativo (USDT, BTC, etc)"""
+    """Retorna o saldo livre; None indica falha na consulta."""
     try:
-        # O CCXT padroniza o retorno do saldo
         balance = client.fetch_balance()
         return float(balance.get(ativo, {}).get('free', 0))
     except Exception as e:
-        print(f"❌ Erro ao buscar saldo: {e}")
-        return 0.0
+        print(f"❌ Erro ao buscar saldo de {ativo}: {e}")
+        return None
 
 
 def obter_preco(client, simbolo="BTC-USDT"):
@@ -50,134 +49,162 @@ def obter_preco(client, simbolo="BTC-USDT"):
         print(f"❌ Erro ao buscar preço: {e}")
         return 0.0
 
-def comprar_mercado(client, simbolo, valor_usdt):
-    """Compra a mercado usando valor_usdt, com confirmacao robusta (fetch_order)."""
+def _confirmar_ordem(client, simbolo, ordem, lado):
+    """
+    Confirma uma ordem sem reutilizar dados antigos após falha de consulta.
+    Retorna a ordem somente quando o status final é closed e filled > 0.
+    Retorna None quando não é possível confirmar com segurança.
+    """
     import time
+
+    if not isinstance(ordem, dict) or not ordem.get("id"):
+        log_erro(f"❌ {lado}: resposta sem ID de ordem para {simbolo}.")
+        return None
+
+    ordem_id = ordem["id"]
+    ordem_atual = ordem
+
+    for tentativa in range(6):
+        status = str(ordem_atual.get("status") or "").lower()
+        try:
+            filled = float(ordem_atual.get("filled") or 0.0)
+        except (TypeError, ValueError):
+            filled = 0.0
+
+        if status == "closed":
+            if filled > 0:
+                log_info(f"✅ {lado} confirmada: {filled} {simbolo}")
+                return ordem_atual
+            log_erro(f"❌ {lado} encerrada sem quantidade executada: {simbolo}")
+            return None
+
+        if status in ("canceled", "cancelled", "rejected", "expired"):
+            log_erro(f"❌ {lado} cancelada/rejeitada: {simbolo} ({status})")
+            return None
+
+        if tentativa == 5:
+            break
+
+        time.sleep(1.0)
+
+        try:
+            consultada = client.fetch_order(ordem_id, simbolo)
+            if not isinstance(consultada, dict):
+                log_erro(
+                    f"⚠️ {lado}: resposta inválida ao consultar ordem "
+                    f"{ordem_id}; estado permanece incerto."
+                )
+                return None
+            ordem_atual = consultada
+        except Exception as e:
+            log_erro(
+                f"⚠️ {lado}: consulta {tentativa + 1}/5 falhou para "
+                f"{ordem_id}: {e}. Execução permanece incerta."
+            )
+            # Não usar a resposta anterior para declarar a ordem confirmada.
+            return None
+
+    log_erro(
+        f"⚠️ {lado}: não foi possível confirmar o estado final da ordem "
+        f"{ordem_id} ({simbolo}). Não reenviar automaticamente."
+    )
+    return None
+
+
+def comprar_mercado(client, simbolo, valor_usdt):
+    """Compra a mercado e retorna somente uma ordem final confirmada."""
     try:
         valor = float(valor_usdt)
+        if valor <= 0:
+            log_erro(f"❌ Compra abortada: valor inválido ({valor_usdt}).")
+            return None
 
-        # 1) Preco atual e conversao valor -> quantidade
         preco = obter_preco(client, simbolo)
         if not preco or preco <= 0:
             log_erro(f"❌ Preço inválido para {simbolo}: {preco}")
             return None
+
         qtd = valor / preco
 
-        # 2) Trunca para a precisao do lote da exchange
         try:
             qtd = float(client.amount_to_precision(simbolo, qtd))
         except Exception as e:
-            log_erro(f"⚠️ Falha ao ajustar precisão de {simbolo}: {e}")
+            log_erro(f"❌ Falha ao ajustar precisão de {simbolo}: {e}")
+            return None
 
-        # 3) Guardiao de poeira: quantidade minima negociavel
         try:
-            _mkt = client.market(simbolo)
-            _min = float(((_mkt.get('limits') or {}).get('amount') or {}).get('min') or 0)
-        except Exception:
-            _min = 0.0
-        if qtd <= 0 or (_min and qtd < _min):
-            log_erro(f"❌ Compra abortada: {qtd} {simbolo} abaixo do mínimo {_min}")
+            mercado = client.market(simbolo)
+            minimo = float(
+                ((mercado.get("limits") or {}).get("amount") or {}).get("min") or 0
+            )
+        except Exception as e:
+            log_erro(f"❌ Não foi possível validar o mínimo de {simbolo}: {e}")
             return None
 
-        log_info(f"📤 Enviando compra: {qtd} {simbolo} (~${valor:.2f} a ${preco:.4f})")
-
-        # 4) Ordem market padrao CCXT
-        ordem = client.create_order(
-            symbol=simbolo,
-            type='market',
-            side='buy',
-            amount=qtd
-        )
-
-        if not ordem or not ordem.get('id'):
-            log_erro(f"❌ Compra sem ID de ordem: {simbolo}")
+        if qtd <= 0 or (minimo and qtd < minimo):
+            log_erro(f"❌ Compra abortada: {qtd} {simbolo} abaixo do mínimo {minimo}")
             return None
 
-        # 5) Confirmacao robusta via fetch_order (igual a venda)
-        ordem_final = ordem
-        for i in range(5):
-            status = str(ordem_final.get('status', '')).lower()
-            filled = float(ordem_final.get('filled') or 0.0)
+        log_info(f"📤 Enviando compra: {qtd} {simbolo} (~${valor:.2f})")
 
-            if status == 'closed' and filled > 0:
-                break
-            if status in ('canceled', 'cancelled', 'rejected', 'expired'):
-                log_erro(f"❌ Compra cancelada/rejeitada: {simbolo} ({status})")
-                return None
-
-            time.sleep(1.0)
-            try:
-                ordem_final = client.fetch_order(ordem['id'], simbolo)
-            except Exception as e:
-                log_erro(f"⚠️ Falha ao consultar compra ({i+1}/5): {e}")
-
-        filled = float(ordem_final.get('filled') or 0.0)
-        if filled <= 0:
-            log_erro(f"❌ Compra NAO confirmada (filled=0): {simbolo}")
+        try:
+            ordem = client.create_order(
+                symbol=simbolo,
+                type="market",
+                side="buy",
+                amount=qtd,
+            )
+        except Exception as e:
+            log_erro(
+                f"⚠️ Erro ao enviar compra de {simbolo}: {e}. "
+                "Não repetir automaticamente; verificar ordens na exchange."
+            )
             return None
 
-        log_info(f"✅ COMPRA CONFIRMADA: {filled} {simbolo}")
-        return ordem_final
+        return _confirmar_ordem(client, simbolo, ordem, "COMPRA")
 
     except Exception as e:
         log_erro(f"❌ Erro na compra: {e}")
         return None
 
+
 def vender_mercado(client, simbolo, quantidade):
-    """Vende a mercado X quantidade da moeda, com confirmacao robusta (fetch_order)."""
-    import time
+    """Vende a mercado e retorna somente uma ordem final confirmada."""
     try:
-        # GUARDIAO DE POEIRA: valida quantidade antes de enviar
         try:
             qtd = float(client.amount_to_precision(simbolo, float(quantidade)))
-            _mkt = client.market(simbolo)
-            _min = float(((_mkt.get('limits') or {}).get('amount') or {}).get('min') or 0)
-            if qtd <= 0 or (_min and qtd < _min):
-                log_erro(f"❌ Venda abortada: {qtd} {simbolo} abaixo do mínimo {_min}")
-                return None
+            mercado = client.market(simbolo)
+            minimo = float(
+                ((mercado.get("limits") or {}).get("amount") or {}).get("min") or 0
+            )
         except Exception as e:
-            log_erro(f"⚠️ Falha ao validar quantidade: {e}")
-            qtd = float(quantidade)
+            log_erro(
+                f"❌ Venda abortada: não foi possível validar quantidade "
+                f"e mercado de {simbolo}: {e}"
+            )
+            return None
+
+        if qtd <= 0 or (minimo and qtd < minimo):
+            log_erro(f"❌ Venda abortada: {qtd} {simbolo} abaixo do mínimo {minimo}")
+            return None
 
         log_info(f"📤 Enviando venda: {qtd} {simbolo}")
 
-        # CORRECAO CRITICA: create_order padrao CCXT (nao create_market_order)
-        ordem = client.create_order(
-            symbol=simbolo,
-            type='market',
-            side='sell',
-            amount=qtd
-        )
-
-        if not ordem or not ordem.get('id'):
-            log_erro(f"❌ Venda sem ID de ordem: {simbolo}")
+        try:
+            ordem = client.create_order(
+                symbol=simbolo,
+                type="market",
+                side="sell",
+                amount=qtd,
+            )
+        except Exception as e:
+            log_erro(
+                f"⚠️ Erro ao enviar venda de {simbolo}: {e}. "
+                "Não repetir automaticamente; verificar ordens na exchange."
+            )
             return None
 
-        # CONFIRMACAO: loop fetch_order ate filled > 0 (igual ao lado da compra)
-        ordem_final = ordem
-        for i in range(5):
-            status = str(ordem_final.get('status', '')).lower()
-            filled = float(ordem_final.get('filled') or 0.0)
-
-            if status == 'closed' and filled > 0:
-                break
-            if status in ('canceled', 'cancelled', 'rejected', 'expired'):
-                log_erro(f"❌ Venda cancelada/rejeitada: {simbolo} ({status})")
-                return None
-
-            time.sleep(1.0)
-            try:
-                ordem_final = client.fetch_order(ordem['id'], simbolo)
-            except Exception as e:
-                log_erro(f"⚠️ Falha ao consultar venda ({i+1}/5): {e}")
-
-        filled = float(ordem_final.get('filled') or 0.0)
-        if filled <= 0:
-            log_erro(f"❌ Venda NAO confirmada (filled=0): {simbolo}")
-            return None
-
-        log_info(f"✅ VENDA CONFIRMADA: {filled} {simbolo}")
-        return ordem_final
+        return _confirmar_ordem(client, simbolo, ordem, "VENDA")
 
     except Exception as e:
         log_erro(f"❌ Erro na venda: {e}")
