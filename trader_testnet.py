@@ -369,7 +369,7 @@ class TraderTestnet:
         if aberta_em_str:
             try:
                 aberta_em_dt = datetime.fromisoformat(aberta_em_str.replace('Z', '+00:00'))
-                agora = datetime.now(opena_em_dt.tzinfo) if aberta_em_dt.tzinfo else datetime.now()
+                agora = datetime.now(aberta_em_dt.tzinfo) if aberta_em_dt.tzinfo else datetime.now()
                 
                 delta_segundos = (agora - aberta_em_dt).total_seconds()
                 
