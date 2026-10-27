@@ -251,61 +251,25 @@ class TraderTestnet:
             log_erro(f"[{sym}] Falha ao enviar ordem de compra (retornou None)")
             return None
 
-        order_id = ordem_inicial.get('id')
-        
-        # VERIFICAÇÃO CRÍTICA: Se não houver ID, não podemos rastrear. Aborta com segurança.
+        # comprar_mercado() já só retorna ordem com status "closed" e filled > 0.
+        # Não consultar novamente: uma falha na segunda consulta poderia deixar
+        # uma compra já confirmada sem posição registrada no controle local.
+        order_id = ordem_inicial.get("id")
+        status = str(ordem_inicial.get("status") or "").lower()
+        qtd_executada = _safe_float(ordem_inicial.get("filled"), 0.0)
+        custo_executado = _safe_float(ordem_inicial.get("cost"), 0.0)
+
         if not order_id:
-            log_erro(f"[{sym}] Ordem enviada mas SEM ID válido. Não é possível confirmar execução.")
+            log_erro(f"[{sym}] Ordem confirmada sem ID válido. Reconciliação necessária.")
             return None
 
-        # 2. VERIFICAÇÃO ROBUSTA: Espera a OKX confirmar o preenchimento real
-        max_retries = 5
-        retry_delay = 1.0 
-        
-        ordem_final = None
-        qtd_executada = 0.0
-        custo_executado = 0.0
-
-        for i in range(max_retries):
-            try:
-                # Tenta buscar o status atualizado
-                # Nota: Algumas versões do CCXT podem precisar de 'params' extra, 
-                # mas para OKX Spot, id + symbol geralmente basta.
-                ordem_atual = self.client.fetch_order(id=order_id, symbol=sym)
-                
-                if not ordem_atual:
-                    raise ValueError("fetch_order retornou None/vazio")
-
-                status = str(ordem_atual.get('status', '')).lower()
-                qtd_executada = _safe_float(ordem_atual.get('filled'), 0.0)
-                custo_executado = _safe_float(ordem_atual.get('cost'), 0.0)
-
-                # Caso Sucesso Total
-                if status == 'closed' and qtd_executada > 0:
-                    ordem_final = ordem_atual
-                    break
-                
-                # Caso Cancelado/Rejeitado
-                elif status in ['canceled', 'cancelled', 'rejected']:
-                    log_erro(f"[{sym}] Ordem cancelada/rejeitada pela exchange. Status: {status}")
-                    return None
-                
-                # Caso Parcialmente Preenchida (aceita se tiver qty > 0)
-                elif qtd_executada > 0:
-                    ordem_final = ordem_atual
-                    break
-                    
-                # Caso Ainda Pendente ('open' ou vazio)
-                else:
-                    if i < max_retries - 1:
-                        time.sleep(retry_delay)
-                        
-            except Exception as e:
-                # Loga o erro específico da consulta para debug futuro
-                log_erro(f"[{sym}] Erro ao consultar status da ordem ({i+1}/{max_retries}): {type(e).__name__}: {e}")
-                if i < max_retries - 1:
-                    time.sleep(retry_delay)
-                continue
+        if status != "closed" or qtd_executada <= 0:
+            log_erro(
+                f"[{sym}] Compra não está confirmada como totalmente executada "
+                f"(status={status or 'desconhecido'}, filled={qtd_executada}). "
+                "Posição não será presumida; verificar ordem na exchange."
+            )
+            return None
 
         # 3. VALIDAÇÃO FINAL ANTES DE REGISTRAR
         if ordem_final is None or qtd_executada <= 0:
