@@ -229,6 +229,7 @@ class NotificadorTelegram:
         mensagem: Any,
         parse_mode: str = "Markdown",
         force_plain: bool = False,
+        reply_markup: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         Envia uma mensagem pro Telegram com fallback seguro.
@@ -257,6 +258,8 @@ class NotificadorTelegram:
                 "text": preparado["markdown"],
                 "parse_mode": parse_mode or "Markdown",
             }
+            if reply_markup is not None:
+                payload_md["reply_markup"] = reply_markup
 
             status, dados, raw = self._post("sendMessage", payload_md)
 
@@ -275,6 +278,8 @@ class NotificadorTelegram:
             "chat_id": self.chat_id,
             "text": preparado["plain"],
         }
+        if reply_markup is not None:
+            payload_plain["reply_markup"] = reply_markup
 
         status, dados, raw = self._post("sendMessage", payload_plain)
 
