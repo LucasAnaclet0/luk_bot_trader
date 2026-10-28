@@ -8,6 +8,8 @@ Scanner Multi-Crypto Profissional v6 (Adaptado para OKX)
 import asyncio
 import traceback
 import time
+import math
+from email.utils import parsedate_to_datetime
 from typing import Dict, List, Optional, Any, Iterable
 from datetime import datetime
 
@@ -176,6 +178,21 @@ class _CoinGeckoClient:
                 await asyncio.sleep(self.MIN_INTERVAL - elapsed)
             self._last_call = time.monotonic()
 
+    @staticmethod
+    def _retry_after_seconds(value):
+        try:
+            raw = str(value or "").strip()
+            if raw.isascii() and raw.isdecimal():
+                seconds = float(raw)
+            else:
+                date = parsedate_to_datetime(raw)
+                if date.tzinfo is None:
+                    return 0.0
+                seconds = date.timestamp() - time.time()
+            return max(0.0, seconds) if math.isfinite(seconds) else 0.0
+        except (TypeError, ValueError, OverflowError, OSError):
+            return 0.0
+
     async def get_fundamental_data(self, coingecko_id: str) -> Optional[Dict]:
         if not coingecko_id:
             return None
@@ -193,6 +210,8 @@ class _CoinGeckoClient:
 
         await self._ensure_session()
         await self._rate_limit()
+        if time.monotonic() < self._cooldown_until:
+            return None
 
         url = f"{self.BASE_URL}/coins/{coingecko_id}"
         params = {
@@ -216,8 +235,15 @@ class _CoinGeckoClient:
                     return normalized
 
                 if resp.status in (429, 418):
-                    self._cooldown_until = time.monotonic() + self.COOLDOWN_429_SECONDS
-                    log_erro(f"[CoinGecko] HTTP {resp.status} para {coingecko_id}. Cooldown por {self.COOLDOWN_429_SECONDS}s.")
+                    cooldown = max(
+                        self.COOLDOWN_429_SECONDS,
+                        self._retry_after_seconds(resp.headers.get("Retry-After")),
+                    )
+                    self._cooldown_until = max(
+                        self._cooldown_until,
+                        time.monotonic() + cooldown,
+                    )
+                    log_erro(f"[CoinGecko] HTTP {resp.status} para {coingecko_id}. Cooldown mínimo de {cooldown}s.")
                     return None
 
                 log_erro(f"[CoinGecko] HTTP {resp.status} para {coingecko_id}")
