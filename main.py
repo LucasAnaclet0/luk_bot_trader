@@ -875,7 +875,23 @@ def tratar_comando(texto):
             f"Cooldown pós-stop: {COOLDOWN_STOP_MINUTOS} min"
         )
 
-        notificador.enviar_mensagem(ajuda)
+        # Botões enviam comandos como mensagens normais ao ListenerComandos.
+        botoes = [
+            [{"text": "/status"}, {"text": "/posicoes"}],
+            [{"text": "/historico"}, {"text": "/watchlist"}],
+            [{"text": "/relatorio"}, {"text": "/relatorio_all"}],
+        ]
+        if AUTO_DISCOVERY_ATIVO:
+            botoes.append([{"text": "/discovery"}])
+        botoes.append([{"text": "/ajuda"}])
+        teclado = {
+            "keyboard": botoes,
+            "resize_keyboard": True,
+            "one_time_keyboard": False,
+            "is_persistent": True,
+        }
+        # Comandos destrutivos não recebem botões para evitar toques acidentais.
+        notificador.enviar_mensagem(ajuda, reply_markup=teclado)
 
     elif comando == "/discovery" and AUTO_DISCOVERY_ATIVO:
         notificador.enviar_mensagem("🔍 *Forçando atualização da watchlist...*")
