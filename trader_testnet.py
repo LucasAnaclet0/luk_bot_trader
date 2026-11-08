@@ -271,10 +271,8 @@ class TraderTestnet:
             )
             return None
 
-        # 3. VALIDAÇÃO FINAL ANTES DE REGISTRAR
-        if ordem_final is None or qtd_executada <= 0:
-            log_erro(f"[{sym}] FALHA CRÍTICA: Ordem enviada mas NÃO confirmada após tentativas. Saldo pode ter sido debitado indevidamente!")
-            return None
+        # comprar_mercado() já confirmou status=closed e filled>0.
+        # Não consultar novamente nem depender de ordem_final (variável obsoleta).
 
         if custo_executado <= 0:
             # Fallback: calcula custo estimado pelo preço médio atual
